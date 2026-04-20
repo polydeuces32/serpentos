@@ -552,7 +552,7 @@ def train_fast(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: 
             r = -0.02
             done = False
 
-            if is_collision(head, snake, box):
+            if is_collision(head, snake[:-1], box):
                 r = -10.0
                 done = True
                 s2 = s
@@ -562,7 +562,15 @@ def train_fast(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: 
                 if head == food:
                     score += 1
                     r = 10.0
-                    food = [random.randint(2, h - 3), random.randint(2, w - 3)]
+                    snake_set = set(map(tuple, snake))
+                    food = None
+                    for _ in range(12):
+                        fy, fx = random.randint(2, h - 3), random.randint(2, w - 3)
+                        if (fy, fx) not in snake_set:
+                            food = [fy, fx]
+                            break
+                    if food is None:
+                        food = [random.randint(2, h - 3), random.randint(2, w - 3)]
                 else:
                     snake.pop()
 
@@ -797,6 +805,7 @@ def play_human(stdscr, speed, diff_name):
         ord("a"): "L",
         ord("d"): "R",
     }
+    opposite = {"U": "D", "D": "U", "L": "R", "R": "L"}
 
     while True:
         stdscr.clear()
@@ -811,18 +820,28 @@ def play_human(stdscr, speed, diff_name):
         if k in (ord("q"), ord("Q")):
             return score, True
         if k in key_map:
-            direction = key_map[k]
+            new_dir = key_map[k]
+            if new_dir != opposite[direction]:
+                direction = new_dir
 
         dy, dx = VEC[direction]
         head = [snake[0][0] + dy, snake[0][1] + dx]
 
-        if is_collision(head, snake, box):
+        if is_collision(head, snake[:-1], box):
             return score, False
 
         snake.insert(0, head)
         if head == food:
             score += 1
-            food = [random.randint(2, h - 3), random.randint(2, w - 3)]
+            snake_set = set(map(tuple, snake))
+            food = None
+            for _ in range(12):
+                fy, fx = random.randint(2, h - 3), random.randint(2, w - 3)
+                if (fy, fx) not in snake_set:
+                    food = [fy, fx]
+                    break
+            if food is None:
+                food = [random.randint(2, h - 3), random.randint(2, w - 3)]
         else:
             snake.pop()
 
@@ -871,7 +890,7 @@ def play_ai_qlearn(stdscr, speed, diff_name, agent: QAgent):
         reward = -0.02
         done = False
 
-        if is_collision(head, snake, box):
+        if is_collision(head, snake[:-1], box):
             reward = -10.0
             done = True
             new_state = state
@@ -881,7 +900,15 @@ def play_ai_qlearn(stdscr, speed, diff_name, agent: QAgent):
             if head == food:
                 score += 1
                 reward = 10.0
-                food = [random.randint(2, h - 3), random.randint(2, w - 3)]
+                snake_set = set(map(tuple, snake))
+                food = None
+                for _ in range(12):
+                    fy, fx = random.randint(2, h - 3), random.randint(2, w - 3)
+                    if (fy, fx) not in snake_set:
+                        food = [fy, fx]
+                        break
+                if food is None:
+                    food = [random.randint(2, h - 3), random.randint(2, w - 3)]
             else:
                 snake.pop()
 
