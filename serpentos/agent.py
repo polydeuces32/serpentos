@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 from collections import defaultdict
@@ -56,5 +57,5 @@ class LearningAgent:
         self.total_food = data.get("total_food", 0)
 
         for k, v in data.get("memory", {}).items():
-            self.memory[eval(k)] = v
+            self.memory[ast.literal_eval(k)] = v
 

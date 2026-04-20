@@ -26,6 +26,35 @@ DIFFICULTY = {
 
 
 # =========================
+# HYPERPARAMETER PRESETS
+# =========================
+PRESETS = {
+    "DEFAULT": {
+        "alpha": 0.15, "gamma": 0.95, "epsilon": 0.25,
+        "eps_min": 0.05, "eps_decay": 0.995, "use_shaping": True,
+        "desc": "Balanced — good starting point",
+    },
+    "BOLD": {
+        "alpha": 0.30, "gamma": 0.90, "epsilon": 0.40,
+        "eps_min": 0.05, "eps_decay": 0.990, "use_shaping": True,
+        "desc": "High alpha/eps — learns fast, less stable",
+    },
+    "CAREFUL": {
+        "alpha": 0.08, "gamma": 0.97, "epsilon": 0.20,
+        "eps_min": 0.02, "eps_decay": 0.998, "use_shaping": True,
+        "desc": "Low alpha/eps — slow but steady",
+    },
+    "SPARSE": {
+        "alpha": 0.15, "gamma": 0.95, "epsilon": 0.25,
+        "eps_min": 0.05, "eps_decay": 0.995, "use_shaping": False,
+        "desc": "No distance shaping — sparse reward only",
+    },
+}
+PRESET_NAMES = list(PRESETS.keys())
+TRAINING_LOG_PATH = os.path.join(DATA_DIR, "training_log.csv")
+
+
+# =========================
 # SAFE CURSES HELPERS
 # =========================
 def safe_addch(stdscr, y, x, ch, attr=0):
@@ -208,7 +237,47 @@ def main_menu(stdscr):
         if k in (ord("1"), ord("2"), ord("3"), ord("q"), ord("Q")):
             return chr(k).lower()
 
-def ai_submenu(stdscr):
+def ai_config_menu(stdscr, current_preset):
+    stdscr.nodelay(False)
+    curses.init_pair(1, curses.COLOR_YELLOW, -1)
+    idx = PRESET_NAMES.index(current_preset)
+
+    while True:
+        stdscr.clear()
+        stdscr.box()
+        safe_addstr(stdscr, 0, 2, " AI CONFIG ", curses.color_pair(1) | curses.A_BOLD)
+        p = PRESETS[PRESET_NAMES[idx]]
+        lines = [
+            f"PRESET: < {PRESET_NAMES[idx]} >  (LEFT/RIGHT to change)",
+            f"  {p['desc']}",
+            "",
+            f"  alpha     = {p['alpha']:.2f}   (learning rate)",
+            f"  gamma     = {p['gamma']:.2f}   (discount factor)",
+            f"  epsilon   = {p['epsilon']:.2f}   (initial exploration)",
+            f"  eps_min   = {p['eps_min']:.2f}   (min exploration)",
+            f"  eps_decay = {p['eps_decay']:.3f} (per-episode decay)",
+            f"  shaping   = {'ON  (distance reward)' if p['use_shaping'] else 'OFF (sparse only)'}",
+            "",
+            "ENTER to confirm   B to back",
+        ]
+        h, _ = stdscr.getmaxyx()
+        y0 = max(2, h // 2 - len(lines) // 2)
+        for i, ln in enumerate(lines):
+            attr = curses.color_pair(1) | (curses.A_BOLD if i == 0 else 0)
+            safe_addstr(stdscr, y0 + i, 4, ln, attr)
+        stdscr.refresh()
+
+        k = stdscr.getch()
+        if k in (curses.KEY_LEFT,):
+            idx = (idx - 1) % len(PRESET_NAMES)
+        elif k in (curses.KEY_RIGHT,):
+            idx = (idx + 1) % len(PRESET_NAMES)
+        elif k in (10, 13, ord(" ")):
+            return PRESET_NAMES[idx]
+        elif k in (ord("b"), ord("B"), 27):
+            return current_preset
+
+def ai_submenu(stdscr, current_preset):
     stdscr.nodelay(False)
     stdscr.clear()
     curses.init_pair(1, curses.COLOR_YELLOW, -1)
@@ -220,18 +289,19 @@ def ai_submenu(stdscr):
         "2  TRAIN FAST (NO RENDER) THEN PLAY",
         "3  TRAIN TURBO (MAX SPEED) THEN PLAY",
         "",
+        f"C  CONFIG (preset: {current_preset})",
         "B  BACK",
     ]
     h, _ = stdscr.getmaxyx()
     y0 = h // 2 - len(lines) // 2
     for i, ln in enumerate(lines):
-        bold = curses.A_BOLD if i in (0, 2, 3, 4, 6) else 0
+        bold = curses.A_BOLD if i in (0, 2, 3, 4, 6, 7) else 0
         draw_center(stdscr, y0 + i, ln, curses.color_pair(1) | bold)
     stdscr.refresh()
 
     while True:
         k = stdscr.getch()
-        if k in (ord("1"), ord("2"), ord("3"), ord("b"), ord("B")):
+        if k in (ord("1"), ord("2"), ord("3"), ord("c"), ord("C"), ord("b"), ord("B")):
             return chr(k).lower()
 
 def training_menu(stdscr, turbo=False):
@@ -335,13 +405,14 @@ def leaderboard_view(stdscr):
 # Q-LEARNING AGENT (TABULAR)
 # =========================
 class QAgent:
-    def __init__(self):
+    def __init__(self, hparams=None):
+        p = hparams or PRESETS["DEFAULT"]
         self.q = load_qtable()  # dict: key -> [q0,q1,q2]
-        self.alpha = 0.15
-        self.gamma = 0.95
-        self.epsilon = 0.25
-        self.eps_min = 0.05
-        self.eps_decay = 0.995
+        self.alpha = p["alpha"]
+        self.gamma = p["gamma"]
+        self.epsilon = p["epsilon"]
+        self.eps_min = p["eps_min"]
+        self.eps_decay = p["eps_decay"]
 
         self.episodes = 0
         self.total_food = 0
@@ -445,7 +516,21 @@ def build_state(snake, food, box, cur_dir):
     danger_l = 1 if is_collision([head[0] + ly, head[1] + lx], snake, box) else 0
     danger_r = 1 if is_collision([head[0] + ry, head[1] + rx], snake, box) else 0
 
-    return (sign(dx), sign(dy), danger_a, danger_l, danger_r, cur_dir)
+    # How many open cells ahead before hitting a wall (clamped 0-4)
+    wall_dist = 0
+    ny, nx = head[0], head[1]
+    for _ in range(4):
+        ny += ay
+        nx += ax
+        if ny <= box[0][0] or ny >= box[1][0] or nx <= box[0][1] or nx >= box[1][1]:
+            break
+        wall_dist += 1
+
+    # Snake length bucket: 0=short(<6), 1=medium(6-15), 2=long(16+)
+    l = len(snake)
+    len_bucket = 0 if l < 6 else (1 if l < 16 else 2)
+
+    return (sign(dx), sign(dy), danger_a, danger_l, danger_r, cur_dir, wall_dist, len_bucket)
 
 # TURBO: compact integer state key (same info, faster hashing)
 # dx,dy in {-1,0,1} -> map to {0,1,2}
@@ -486,18 +571,36 @@ def build_state_int(head_y, head_x, food_y, food_x, snake_set, box_y1, box_x1, b
 
 
 # =========================
+# SPARKLINE
+# =========================
+def sparkline(values, width=30):
+    if not values:
+        return " " * width
+    bars = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+    lo, hi = min(values), max(values)
+    if hi == lo:
+        return ("\u2584" * min(len(values), width)).ljust(width)
+    result = ""
+    for v in values[-width:]:
+        idx = int((v - lo) / (hi - lo) * (len(bars) - 1))
+        result += bars[idx]
+    return result.ljust(width)
+
+
+# =========================
 # HUD (AI THINKING)
 # =========================
 def draw_ai_hud(stdscr, agent, state_tuple, abs_dir, score, steps, diff_name, show=True):
     if not show:
         return
-    sx, sy, da, dl, dr, cd = state_tuple
+    sx, sy, da, dl, dr, cd, wd, lb = state_tuple
     q0, q1, q2 = agent.last_qvals if agent.last_qvals else [0.0, 0.0, 0.0]
+    lb_name = ("short", "medium", "long")[lb]
 
     lines = [
         f"MODE: AI(Q)   DIFF: {diff_name}   SCORE: {score}   STEPS: {steps}",
         f"EPS: {agent.epsilon:.3f}  ALPHA: {agent.alpha:.2f}  GAMMA: {agent.gamma:.2f}  EPISODES: {agent.episodes}",
-        f"STATE: dx={sx} dy={sy}  danger(a,l,r)=({da},{dl},{dr})  dir={cd}",
+        f"STATE: dx={sx} dy={sy}  danger(a,l,r)=({da},{dl},{dr})  dir={cd}  wall={wd}  len={lb_name}",
         f"ACTION: rel={agent.last_action} abs={abs_dir}  REWARD: {agent.last_reward:+.2f}",
         f"Q: straight={q0:+.2f}  left={q1:+.2f}  right={q2:+.2f}",
         "HUD: H toggle   Q quit",
@@ -511,7 +614,7 @@ def draw_ai_hud(stdscr, agent, state_tuple, abs_dir, score, steps, diff_name, sh
 # =========================
 # TRAINING (FAST, NO RENDER)
 # =========================
-def train_fast(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: str):
+def train_fast(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: str, use_shaping: bool = True):
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_YELLOW, -1)
@@ -522,6 +625,12 @@ def train_fast(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: 
     recent = []
     best = 0
     aborted = False
+
+    ensure_data_dir()
+    log_new = not os.path.exists(TRAINING_LOG_PATH)
+    log_f = open(TRAINING_LOG_PATH, "a", encoding="utf-8")
+    if log_new:
+        log_f.write("episode,score,avg50,epsilon,mode\n")
 
     for ep in range(1, episodes + 1):
         k = stdscr.getch()
@@ -552,7 +661,7 @@ def train_fast(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: 
             r = -0.02
             done = False
 
-            if is_collision(head, snake, box):
+            if is_collision(head, snake[:-1], box):
                 r = -10.0
                 done = True
                 s2 = s
@@ -562,16 +671,25 @@ def train_fast(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: 
                 if head == food:
                     score += 1
                     r = 10.0
-                    food = [random.randint(2, h - 3), random.randint(2, w - 3)]
+                    snake_set = set(map(tuple, snake))
+                    food = None
+                    for _ in range(12):
+                        fy, fx = random.randint(2, h - 3), random.randint(2, w - 3)
+                        if (fy, fx) not in snake_set:
+                            food = [fy, fx]
+                            break
+                    if food is None:
+                        food = [random.randint(2, h - 3), random.randint(2, w - 3)]
                 else:
                     snake.pop()
 
-                dist = abs(food[0] - snake[0][0]) + abs(food[1] - snake[0][1])
-                if dist < prev_dist:
-                    r += 0.05
-                elif dist > prev_dist:
-                    r -= 0.03
-                prev_dist = dist
+                if use_shaping:
+                    dist = abs(food[0] - snake[0][0]) + abs(food[1] - snake[0][1])
+                    if dist < prev_dist:
+                        r += 0.05
+                    elif dist > prev_dist:
+                        r -= 0.03
+                    prev_dist = dist
 
                 s2 = build_state(snake, food, box, abs_dir)
 
@@ -590,18 +708,22 @@ def train_fast(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: 
         avg = sum(recent) / max(1, len(recent))
         best = max(best, score)
 
+        log_f.write(f"{agent.episodes},{score},{avg:.2f},{agent.epsilon:.4f},fast\n")
+        log_f.flush()
+
         if ep == 1 or ep % 10 == 0 or ep == episodes:
             stdscr.clear()
             stdscr.box()
             safe_addstr(stdscr, 0, 2, " TRAINING (FAST) ", curses.color_pair(1) | curses.A_BOLD)
-            safe_addstr(stdscr, 2, 2, f"DIFF: {diff_name}", curses.color_pair(1))
+            safe_addstr(stdscr, 2, 2, f"DIFF: {diff_name}  SHAPING: {'ON' if use_shaping else 'OFF'}", curses.color_pair(1))
             safe_addstr(stdscr, 3, 2, f"EPISODE: {ep}/{episodes}", curses.color_pair(1) | curses.A_BOLD)
-            safe_addstr(stdscr, 4, 2, f"AVG (last 50): {avg:.2f}", curses.color_pair(1))
-            safe_addstr(stdscr, 5, 2, f"BEST: {best}", curses.color_pair(1))
-            safe_addstr(stdscr, 6, 2, f"EPS: {agent.epsilon:.3f}", curses.color_pair(1))
+            safe_addstr(stdscr, 4, 2, f"AVG (last 50): {avg:.2f}   BEST: {best}", curses.color_pair(1))
+            safe_addstr(stdscr, 5, 2, f"EPS: {agent.epsilon:.3f}", curses.color_pair(1))
+            safe_addstr(stdscr, 6, 2, f"SCORES: {sparkline(recent)}", curses.color_pair(1))
             safe_addstr(stdscr, 8, 2, "PRESS Q TO ABORT", curses.color_pair(1))
             stdscr.refresh()
 
+    log_f.close()
     stdscr.nodelay(False)
     return best, aborted
 
@@ -609,7 +731,7 @@ def train_fast(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: 
 # =========================
 # TRAINING TURBO (MAX SPEED, NO CURSES IN STEP LOOP)
 # =========================
-def train_turbo(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: str):
+def train_turbo(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name: str, use_shaping: bool = True):
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_YELLOW, -1)
@@ -623,8 +745,12 @@ def train_turbo(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name:
     best = 0
     aborted = False
 
-    # Turbo usually benefits from a bit more exploration early
-    # (keeps your existing agent settings; we just let it run much faster)
+    ensure_data_dir()
+    log_new = not os.path.exists(TRAINING_LOG_PATH)
+    log_f = open(TRAINING_LOG_PATH, "a", encoding="utf-8")
+    if log_new:
+        log_f.write("episode,score,avg50,epsilon,mode\n")
+
     ui_every = 50  # reduce curses overhead
 
     for ep in range(1, episodes + 1):
@@ -692,8 +818,10 @@ def train_turbo(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name:
             else:
                 ny, nx = head_y, head_x + 1
 
-            # collision check (walls + body)
-            if ny <= box_y1 or ny >= box_y2 or nx <= box_x1 or nx >= box_x2 or (ny, nx) in snake_set:
+            # collision check (walls + body, excluding tail which will move)
+            tail = snake[-1]
+            body_hit = (ny, nx) in snake_set and (ny, nx) != tail
+            if ny <= box_y1 or ny >= box_y2 or nx <= box_x1 or nx >= box_x2 or body_hit:
                 r = -10.0
                 done = True
                 s2 = s
@@ -724,13 +852,14 @@ def train_turbo(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name:
                 tail = snake.pop()
                 snake_set.discard(tail)
 
-            # distance shaping
-            dist = abs(food_y - ny) + abs(food_x - nx)
-            if dist < prev_dist:
-                r += 0.05
-            elif dist > prev_dist:
-                r -= 0.03
-            prev_dist = dist
+            # distance shaping (optional)
+            if use_shaping:
+                dist = abs(food_y - ny) + abs(food_x - nx)
+                if dist < prev_dist:
+                    r += 0.05
+                elif dist > prev_dist:
+                    r -= 0.03
+                prev_dist = dist
 
             # next state
             d = nd
@@ -752,18 +881,22 @@ def train_turbo(stdscr, agent: QAgent, episodes: int, h: int, w: int, diff_name:
         if score > best:
             best = score
 
+        log_f.write(f"{agent.episodes},{score},{avg:.2f},{agent.epsilon:.4f},turbo\n")
+        log_f.flush()
+
         if ep == 1 or ep % ui_every == 0 or ep == episodes:
             stdscr.clear()
             stdscr.box()
             safe_addstr(stdscr, 0, 2, " TRAINING (TURBO) ", curses.color_pair(1) | curses.A_BOLD)
-            safe_addstr(stdscr, 2, 2, f"DIFF: {diff_name}", curses.color_pair(1))
+            safe_addstr(stdscr, 2, 2, f"DIFF: {diff_name}  SHAPING: {'ON' if use_shaping else 'OFF'}", curses.color_pair(1))
             safe_addstr(stdscr, 3, 2, f"EPISODE: {ep}/{episodes}", curses.color_pair(1) | curses.A_BOLD)
-            safe_addstr(stdscr, 4, 2, f"AVG (last 50): {avg:.2f}", curses.color_pair(1))
-            safe_addstr(stdscr, 5, 2, f"BEST: {best}", curses.color_pair(1))
-            safe_addstr(stdscr, 6, 2, f"EPS: {agent.epsilon:.3f}", curses.color_pair(1))
+            safe_addstr(stdscr, 4, 2, f"AVG (last 50): {avg:.2f}   BEST: {best}", curses.color_pair(1))
+            safe_addstr(stdscr, 5, 2, f"EPS: {agent.epsilon:.3f}", curses.color_pair(1))
+            safe_addstr(stdscr, 6, 2, f"SCORES: {sparkline(recent)}", curses.color_pair(1))
             safe_addstr(stdscr, 8, 2, "PRESS Q TO ABORT", curses.color_pair(1))
             stdscr.refresh()
 
+    log_f.close()
     stdscr.nodelay(False)
     return best, aborted
 
@@ -797,6 +930,7 @@ def play_human(stdscr, speed, diff_name):
         ord("a"): "L",
         ord("d"): "R",
     }
+    opposite = {"U": "D", "D": "U", "L": "R", "R": "L"}
 
     while True:
         stdscr.clear()
@@ -811,25 +945,35 @@ def play_human(stdscr, speed, diff_name):
         if k in (ord("q"), ord("Q")):
             return score, True
         if k in key_map:
-            direction = key_map[k]
+            new_dir = key_map[k]
+            if new_dir != opposite[direction]:
+                direction = new_dir
 
         dy, dx = VEC[direction]
         head = [snake[0][0] + dy, snake[0][1] + dx]
 
-        if is_collision(head, snake, box):
+        if is_collision(head, snake[:-1], box):
             return score, False
 
         snake.insert(0, head)
         if head == food:
             score += 1
-            food = [random.randint(2, h - 3), random.randint(2, w - 3)]
+            snake_set = set(map(tuple, snake))
+            food = None
+            for _ in range(12):
+                fy, fx = random.randint(2, h - 3), random.randint(2, w - 3)
+                if (fy, fx) not in snake_set:
+                    food = [fy, fx]
+                    break
+            if food is None:
+                food = [random.randint(2, h - 3), random.randint(2, w - 3)]
         else:
             snake.pop()
 
         stdscr.refresh()
         time.sleep(speed)
 
-def play_ai_qlearn(stdscr, speed, diff_name, agent: QAgent):
+def play_ai_qlearn(stdscr, speed, diff_name, agent: QAgent, use_shaping: bool = True):
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_YELLOW, -1)
@@ -871,7 +1015,7 @@ def play_ai_qlearn(stdscr, speed, diff_name, agent: QAgent):
         reward = -0.02
         done = False
 
-        if is_collision(head, snake, box):
+        if is_collision(head, snake[:-1], box):
             reward = -10.0
             done = True
             new_state = state
@@ -881,16 +1025,25 @@ def play_ai_qlearn(stdscr, speed, diff_name, agent: QAgent):
             if head == food:
                 score += 1
                 reward = 10.0
-                food = [random.randint(2, h - 3), random.randint(2, w - 3)]
+                snake_set = set(map(tuple, snake))
+                food = None
+                for _ in range(12):
+                    fy, fx = random.randint(2, h - 3), random.randint(2, w - 3)
+                    if (fy, fx) not in snake_set:
+                        food = [fy, fx]
+                        break
+                if food is None:
+                    food = [random.randint(2, h - 3), random.randint(2, w - 3)]
             else:
                 snake.pop()
 
-            dist = abs(food[0] - snake[0][0]) + abs(food[1] - snake[0][1])
-            if dist < prev_dist:
-                reward += 0.05
-            elif dist > prev_dist:
-                reward -= 0.03
-            prev_dist = dist
+            if use_shaping:
+                dist = abs(food[0] - snake[0][0]) + abs(food[1] - snake[0][1])
+                if dist < prev_dist:
+                    reward += 0.05
+                elif dist > prev_dist:
+                    reward -= 0.03
+                prev_dist = dist
 
             new_state = build_state(snake, food, box, abs_dir)
 
@@ -944,8 +1097,9 @@ def post_training_screen(stdscr, best, aborted, turbo=False):
     safe_addstr(stdscr, 3, 2, f"BEST SCORE: {best}", curses.color_pair(1))
     if aborted:
         safe_addstr(stdscr, 4, 2, "STATUS: ABORTED BY USER", curses.color_pair(1))
-    safe_addstr(stdscr, 6, 2, "1  PLAY TRAINED AI NOW", curses.color_pair(1) | curses.A_BOLD)
-    safe_addstr(stdscr, 7, 2, "B  BACK", curses.color_pair(1) | curses.A_BOLD)
+    safe_addstr(stdscr, 5, 2, f"LOG: {TRAINING_LOG_PATH}", curses.color_pair(1))
+    safe_addstr(stdscr, 7, 2, "1  PLAY TRAINED AI NOW", curses.color_pair(1) | curses.A_BOLD)
+    safe_addstr(stdscr, 8, 2, "B  BACK", curses.color_pair(1) | curses.A_BOLD)
     stdscr.refresh()
     while True:
         k = stdscr.getch()
@@ -960,7 +1114,8 @@ def post_training_screen(stdscr, best, aborted, turbo=False):
 # =========================
 def main(stdscr):
     boot_animation(stdscr)
-    agent = QAgent()
+    current_preset = "DEFAULT"
+    agent = QAgent(hparams=PRESETS[current_preset])
 
     while True:
         choice = main_menu(stdscr)
@@ -982,45 +1137,57 @@ def main(stdscr):
             if quit_early:
                 continue
         else:
-            sub = ai_submenu(stdscr)
-            if sub == "b":
-                continue
-
-            if sub == "1":
-                score, quit_early = play_ai_qlearn(stdscr, speed, diff_name, agent)
-                add_score_to_leaderboard(score, "AI(Q)", diff_name)
-                if quit_early:
+            while True:
+                sub = ai_submenu(stdscr, current_preset)
+                if sub == "b":
+                    break
+                if sub == "c":
+                    new_preset = ai_config_menu(stdscr, current_preset)
+                    if new_preset != current_preset:
+                        current_preset = new_preset
+                        agent = QAgent(hparams=PRESETS[current_preset])
                     continue
 
-            elif sub == "2":
-                eps = training_menu(stdscr, turbo=False)
-                if eps is None:
-                    continue
-                h, w = stdscr.getmaxyx()
-                best, aborted = train_fast(stdscr, agent, eps, h, w, diff_name)
-                nxt = post_training_screen(stdscr, best, aborted, turbo=False)
-                if nxt == "play":
-                    score, quit_early = play_ai_qlearn(stdscr, speed, diff_name, agent)
+                use_shaping = PRESETS[current_preset]["use_shaping"]
+
+                if sub == "1":
+                    score, quit_early = play_ai_qlearn(stdscr, speed, diff_name, agent, use_shaping)
                     add_score_to_leaderboard(score, "AI(Q)", diff_name)
                     if quit_early:
+                        break
+                elif sub == "2":
+                    eps = training_menu(stdscr, turbo=False)
+                    if eps is None:
                         continue
-                else:
-                    continue
+                    h, w = stdscr.getmaxyx()
+                    best, aborted = train_fast(stdscr, agent, eps, h, w, diff_name, use_shaping)
+                    nxt = post_training_screen(stdscr, best, aborted, turbo=False)
+                    if nxt == "play":
+                        score, quit_early = play_ai_qlearn(stdscr, speed, diff_name, agent, use_shaping)
+                        add_score_to_leaderboard(score, "AI(Q)", diff_name)
+                        if quit_early:
+                            break
+                    else:
+                        continue
+                elif sub == "3":
+                    eps = training_menu(stdscr, turbo=True)
+                    if eps is None:
+                        continue
+                    h, w = stdscr.getmaxyx()
+                    best, aborted = train_turbo(stdscr, agent, eps, h, w, diff_name, use_shaping)
+                    nxt = post_training_screen(stdscr, best, aborted, turbo=True)
+                    if nxt == "play":
+                        score, quit_early = play_ai_qlearn(stdscr, speed, diff_name, agent, use_shaping)
+                        add_score_to_leaderboard(score, "AI(Q)", diff_name)
+                        if quit_early:
+                            break
+                    else:
+                        continue
 
-            elif sub == "3":
-                eps = training_menu(stdscr, turbo=True)
-                if eps is None:
-                    continue
-                h, w = stdscr.getmaxyx()
-                best, aborted = train_turbo(stdscr, agent, eps, h, w, diff_name)
-                nxt = post_training_screen(stdscr, best, aborted, turbo=True)
-                if nxt == "play":
-                    score, quit_early = play_ai_qlearn(stdscr, speed, diff_name, agent)
-                    add_score_to_leaderboard(score, "AI(Q)", diff_name)
-                    if quit_early:
-                        continue
-                else:
-                    continue
+                if not game_over_screen(stdscr, score):
+                    return
+                break
+            continue
 
         if not game_over_screen(stdscr, score):
             break
