@@ -33,11 +33,25 @@ examples:
 Every command takes --help. State lives in ~/.serpentos (override --data-dir).
 """
 
+RUN_USAGE = """usage: serpentos run [-h] [--data-dir DATA_DIR] [--no-color]
+
+Play SerpentOS in the terminal.
+
+options:
+  -h, --help            show this help message and exit
+  --data-dir DATA_DIR   state directory (default: ~/.serpentos)
+  --no-color            disable terminal colours
+"""
+
 
 def _version() -> str:
     from . import __version__
 
     return f"serpentos {__version__}"
+
+
+def _wants_help(args: List[str]) -> bool:
+    return "-h" in args or "--help" in args
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -54,10 +68,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(_version())
         return 0
 
-    if command in ("help",):
+    if command == "help":
         print(USAGE, end="")
         return 0
-    if command in ("version",):
+    if command == "version":
         print(_version())
         return 0
 
@@ -72,6 +86,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return bot_main(["--bench", *rest])
 
     if command in (None, "run", "play"):
+        # Help must work even on stock Windows Python where curses is absent.
+        # Do not import the terminal UI merely to render its argument help.
+        if _wants_help(rest):
+            print(RUN_USAGE, end="")
+            return 0
+
         from .serpentos import main as ui_main
 
         return ui_main(rest)
