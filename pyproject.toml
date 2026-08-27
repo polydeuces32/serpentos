@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "serpentos"
+version = "0.2.0"
+description = "A terminal snake game with a Q-learning agent that can also run itself headlessly."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+keywords = ["snake", "reinforcement-learning", "q-learning", "curses", "terminal", "agent"]
+classifiers = [
+  "Environment :: Console :: Curses",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Games/Entertainment :: Arcade",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# The learning core is pure standard library. windows-curses is only needed for
+# the terminal UI; the headless agent runs anywhere Python does.
+dependencies = ["windows-curses>=2.3.0; sys_platform == 'win32'"]
+
+[project.urls]
+Homepage = "https://github.com/polydeuces32/serpentos"
+Issues = "https://github.com/polydeuces32/serpentos/issues"
+
+[project.scripts]
+serpentos = "serpentos.__main__:main"
+
+[tool.setuptools]
+packages = ["serpentos"]

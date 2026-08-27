@@ -1,6 +1,6 @@
 # SerpentOS
 
-A terminal snake game with a built-in Q-learning AI. Watch the agent learn in real time, train it through thousands of episodes, and compare different learning strategies — all from your terminal with zero dependencies.
+A terminal snake game with a built-in Q-learning AI. Watch the agent learn in real time, train it through thousands of episodes, or let it run on its own with no terminal at all — from your terminal, with zero dependencies.
 
 ---
 
@@ -8,14 +8,31 @@ A terminal snake game with a built-in Q-learning AI. Watch the agent learn in re
 
 - **Human mode** — classic snake with arrow keys or WASD
 - **AI mode** — tabular Q-learning agent with a live thinking HUD
+- **Headless agent** — trains itself with no screen, survives SIGTERM, checkpoints as it goes
 - **Fast & Turbo training** — run hundreds or thousands of episodes without rendering
 - **Hyperparameter presets** — swap learning profiles mid-session (DEFAULT / BOLD / CAREFUL / SPARSE)
 - **Reward shaping toggle** — compare sparse vs. dense reward learning
 - **Live sparkline** — ASCII score graph updates during training
-- **CSV training log** — export every episode to `~/.serpentos/training_log.csv` for offline plotting
+- **Reproducible benchmark** — score any agent on a frozen course and get the same number anywhere
+- **Portable policies** — export a trained brain to a file and hand it to someone else
+- **CSV + JSONL logs** — every episode recorded for offline plotting
 - **Persistent Q-table** — the agent remembers what it learned between sessions
 - **Leaderboard** — top 10 scores saved locally
 - **Difficulty levels** — Easy / Normal / Hard
+
+---
+
+## Quick start
+
+```bash
+git clone https://github.com/polydeuces32/serpentos.git
+cd serpentos
+
+python3 serpentos/serpentos.py              # play
+python3 -m serpentos bot --episodes 5000    # train with no UI
+```
+
+Python 3.9 or newer. No packages to install on macOS or Linux.
 
 ---
 
@@ -53,6 +70,8 @@ python3 serpentos/serpentos.py
 ### Windows
 
 > The game uses Python's `curses` library for terminal rendering. This is not available in standard Windows Command Prompt or PowerShell, so you have two options below.
+>
+> The **headless agent needs none of this** — `python -m serpentos bot` runs on stock Windows Python.
 
 #### Option A — WSL (recommended, one-time setup)
 
@@ -88,8 +107,6 @@ python3 serpentos/serpentos.py
 
 #### Option B — windows-curses (no WSL needed)
 
-If you'd rather stay in Windows natively, install the `windows-curses` package which adds curses support to standard Python on Windows.
-
 **1.** Download and install Python from [python.org/downloads](https://www.python.org/downloads/)
 - During install, check **"Add Python to PATH"**
 
@@ -109,6 +126,16 @@ python serpentos\serpentos.py
 
 ---
 
+### Install as a command (optional)
+
+```bash
+pip install .
+serpentos            # the game
+serpentos bot --help # the agent
+```
+
+---
+
 ## Controls
 
 | Key | Action |
@@ -118,9 +145,11 @@ python serpentos\serpentos.py
 | `Q` | Quit current game |
 | `Y` / `N` | Play again / return to menu |
 
+The terminal must be at least **40x14**. Below that SerpentOS shows a resize prompt instead of starting.
+
 ---
 
-## AI Training
+## AI training
 
 ### Presets
 Press **C** in the AI submenu to open the config screen. Use the left/right arrow keys to cycle through presets:
@@ -132,18 +161,81 @@ Press **C** in the AI submenu to open the config screen. Use the left/right arro
 | CAREFUL | Low learning rate — slow but steady convergence |
 | SPARSE | No distance shaping — only food/death rewards |
 
-Switching presets starts the agent fresh with the new hyperparameters.
+Switching presets applies the new hyperparameters and resets exploration, but **keeps** what the agent has learned. Press **R** on that screen to wipe the Q-table and start from nothing.
 
 ### Training modes
 - **Fast** — runs episodes without rendering, shows a live sparkline of scores
 - **Turbo** — maximum speed, minimal UI updates, best for large episode counts
 
-### Training log
-Every episode is appended to `~/.serpentos/training_log.csv`:
+Both feed the same Q-table the AI plays with, so training always transfers to play.
+
+---
+
+## The self-running agent
+
+The learning core has no curses dependency, so the agent can run with no terminal, no keyboard and no screen:
+
+```bash
+python -m serpentos bot --episodes 20000 --preset BOLD   # train
+python -m serpentos bot --forever                        # train until stopped
+python -m serpentos bot --eval 200 --json                # score it, no learning
+python -m serpentos bot --bench                          # reproducible benchmark
 ```
-episode, score, avg50, epsilon, mode
+
+It checkpoints every 100 episodes, and on `SIGINT`/`SIGTERM` it finishes the current episode, saves, and exits cleanly — so `docker stop` or `systemctl restart` never costs more than one episode.
+
+Roughly 800 episodes/second on a modern laptop core.
+
+See **[docs/AGENT.md](docs/AGENT.md)** for running it under systemd, Docker, cron and CI, plus the full flag reference.
+
+### Sharing a trained brain
+
+A policy is pure data — a table of state keys to three numbers. Importing one never executes anything the author wrote.
+
+```bash
+python -m serpentos bot --bench --export-policy my-policy.json --name "your-handle"
+python -m serpentos bot --bench --import-policy someone-elses-policy.json
 ```
-Open it in Excel, Google Sheets, or plot it with Python to visualise how the agent learns over time.
+
+The benchmark runs 100 fixed episodes on a fixed grid with fixed seeds, so the same policy scores the same on every machine. See **[docs/ECOSYSTEM.md](docs/ECOSYSTEM.md)**.
+
+---
+
+## Where your data lives
+
+Everything is under `~/.serpentos/` (override with `--data-dir`):
+
+| File | What it is |
+|------|-----------|
+| `qtable.json` | The learned Q-table plus episode count and exploration rate |
+| `leaderboard.json` | Top 10 scores |
+| `training_log.csv` | `episode,score,avg50,epsilon,mode` — rotates at 5 MB |
+| `serpentos.lock` | Held while a game or agent is running |
+
+Checkpoints are written atomically, so killing the process mid-save cannot corrupt them. If a checkpoint is ever unreadable, it is moved aside as `qtable.json.corrupt-<timestamp>` rather than deleted.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `ModuleNotFoundError: No module named '_curses'` | Windows: `pip install windows-curses`, or use WSL, or run the headless agent |
+| `TERMINAL TOO SMALL` | Resize to at least 40x14 |
+| `... is in use by bot (pid N)` | Another agent or game owns the data directory. Stop it, or pass `--data-dir` |
+| Colours look wrong or the box is broken | Set `TERM=xterm-256color`; on Windows use Windows Terminal, not `cmd.exe` |
+| The AI plays badly after training | Check `python -m serpentos bot --bench`. A fresh table scores ~0; 3,000 episodes on `BOLD` reaches a mean around 10, and 8,000 around 12 |
+| Training feels slow | Use the headless agent, which does not render at all |
+
+---
+
+## Development
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+62 tests, standard library only, no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -151,4 +243,4 @@ Open it in Excel, Google Sheets, or plot it with Python to visualise how the age
 
 - Python 3.9 or higher
 - macOS or Linux: no extra packages needed
-- Windows: WSL **or** `pip install windows-curses`
+- Windows: WSL **or** `pip install windows-curses` (UI only — the agent needs neither)
