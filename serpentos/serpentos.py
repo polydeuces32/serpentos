@@ -28,9 +28,11 @@ except ImportError:  # pragma: no cover - platform specific
 
 try:
     from . import core
+    from .theme import Theme
 except ImportError:  # executed as a plain script: python serpentos/serpentos.py
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import core  # type: ignore[no-redef]
+    from theme import Theme  # type: ignore[no-redef]
 
 DIFFICULTY = core.DIFFICULTY
 PRESETS = core.PRESETS
@@ -41,6 +43,17 @@ MIN_HEIGHT = core.SnakeEnv.MIN_ROWS + 8
 MIN_WIDTH = max(core.SnakeEnv.MIN_COLS + 4, 40)
 
 CHECKPOINT_EVERY = 50  # episodes; the Q-table is written atomically, not per step
+
+HEAD_CH = "@"
+BODY_CH = "#"
+FOOD_CH = "*"
+
+_THEME: Optional[Theme] = None
+
+
+def T(role: str, extra: int = 0) -> int:
+    """Attribute for a theme role. Falls back to plain text before setup."""
+    return _THEME(role, extra) if _THEME is not None else extra
 
 
 # =========================
@@ -71,17 +84,28 @@ def safe_addstr(stdscr, y, x, s, attr=0):
         pass
 
 
-def init_colors():
-    curses.start_color()
-    curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_YELLOW, -1)
-    curses.init_pair(2, curses.COLOR_RED, -1)
+def hide_cursor():
+    """Not every terminal can hide the cursor; a VT100 cannot."""
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
 
 
 def draw_center(stdscr, y, text, attr=0):
     h, w = stdscr.getmaxyx()
     x = max(0, (w // 2) - (len(text) // 2))
     safe_addstr(stdscr, y, x, text, attr)
+
+
+def draw_frame(stdscr, title=None, title_role="title"):
+    """Clear the screen and draw the border, tinted, with an optional title."""
+    stdscr.clear()
+    stdscr.attrset(T("border"))
+    stdscr.box()
+    stdscr.attrset(0)
+    if title:
+        safe_addstr(stdscr, 0, 2, title, T(title_role))
 
 
 def terminal_too_small(stdscr) -> bool:
@@ -95,9 +119,9 @@ def size_warning(stdscr) -> bool:
     while terminal_too_small(stdscr):
         h, w = stdscr.getmaxyx()
         stdscr.clear()
-        safe_addstr(stdscr, 0, 0, "TERMINAL TOO SMALL")
-        safe_addstr(stdscr, 1, 0, f"have {w}x{h}, need {MIN_WIDTH}x{MIN_HEIGHT}")
-        safe_addstr(stdscr, 2, 0, "resize, or Q to quit")
+        safe_addstr(stdscr, 0, 0, "TERMINAL TOO SMALL", T("bad", curses.A_BOLD))
+        safe_addstr(stdscr, 1, 0, f"have {w}x{h}, need {MIN_WIDTH}x{MIN_HEIGHT}", T("text"))
+        safe_addstr(stdscr, 2, 0, "resize, or Q to quit", T("dim"))
         stdscr.refresh()
         k = stdscr.getch()
         if k in (ord("q"), ord("Q")):
@@ -109,8 +133,7 @@ def size_warning(stdscr) -> bool:
 # BOOT ANIMATION
 # =========================
 def boot_animation(stdscr):
-    curses.curs_set(0)
-    init_colors()
+    hide_cursor()
 
     h, w = stdscr.getmaxyx()
     cy, cx = h // 2, w // 2
@@ -138,17 +161,18 @@ def boot_animation(stdscr):
                 continue
             y, x = pts[i]
             ch = chars[max(0, len(chars) - 1 - d)]
-            attr = curses.color_pair(1)
             if d == 0:
-                attr |= curses.A_BOLD
-            elif d >= trail - 2:
-                attr |= curses.A_DIM
-            safe_addch(stdscr, y, x, ch, attr)
+                role = "glow_hot"
+            elif d >= trail - 3:
+                role = "glow_cool"
+            else:
+                role = "glow_warm"
+            safe_addch(stdscr, y, x, ch, T(role))
 
         title = "SERPENTOS CORE"
         sub = "BOOTING TERMINAL SIM"
-        safe_addstr(stdscr, cy + r + 2, cx - len(title) // 2, title, curses.color_pair(1) | curses.A_BOLD)
-        safe_addstr(stdscr, cy + r + 3, cx - len(sub) // 2, sub, curses.color_pair(1))
+        safe_addstr(stdscr, cy + r + 2, cx - len(title) // 2, title, T("title"))
+        safe_addstr(stdscr, cy + r + 3, cx - len(sub) // 2, sub, T("accent"))
         stdscr.refresh()
         time.sleep(0.04)
 
@@ -160,15 +184,25 @@ def boot_animation(stdscr):
 # =========================
 # MENUS
 # =========================
+def draw_menu_line(stdscr, y, line, selectable, x=None):
+    """Draw ``K  LABEL`` with the shortcut key picked out from the label."""
+    if x is None:
+        _, w = stdscr.getmaxyx()
+        x = max(0, (w // 2) - (len(line) // 2))
+    if selectable and len(line) > 3 and line[1:3] == "  ":
+        safe_addstr(stdscr, y, x, line[0], T("value", curses.A_BOLD))
+        safe_addstr(stdscr, y, x + 3, line[3:], T("accent"))
+    else:
+        safe_addstr(stdscr, y, x, line, T("title" if selectable else "dim"))
+
+
 def menu(stdscr, lines, accept, bold_rows=()):
     stdscr.nodelay(False)
     stdscr.clear()
-    init_colors()
     h, _ = stdscr.getmaxyx()
     y0 = max(0, h // 2 - len(lines) // 2)
     for i, line in enumerate(lines):
-        bold = curses.A_BOLD if i in bold_rows else 0
-        draw_center(stdscr, y0 + i, line, curses.color_pair(1) | bold)
+        draw_menu_line(stdscr, y0 + i, line, i in bold_rows)
     stdscr.refresh()
 
     while True:
@@ -227,13 +261,10 @@ def training_menu(stdscr, turbo=False):
 def ai_config_menu(stdscr, current_preset):
     """Returns ``(preset, reset_requested)``."""
     stdscr.nodelay(False)
-    init_colors()
     idx = PRESET_NAMES.index(current_preset)
 
     while True:
-        stdscr.clear()
-        stdscr.box()
-        safe_addstr(stdscr, 0, 2, " AI CONFIG ", curses.color_pair(1) | curses.A_BOLD)
+        draw_frame(stdscr, " AI CONFIG ")
         p = PRESETS[PRESET_NAMES[idx]]
         lines = [
             f"PRESET: < {PRESET_NAMES[idx]} >  (LEFT/RIGHT to change)",
@@ -251,8 +282,15 @@ def ai_config_menu(stdscr, current_preset):
         h, _ = stdscr.getmaxyx()
         y0 = max(2, h // 2 - len(lines) // 2)
         for i, line in enumerate(lines):
-            attr = curses.color_pair(1) | (curses.A_BOLD if i == 0 else 0)
-            safe_addstr(stdscr, y0 + i, 4, line, attr)
+            if i == 0:
+                role = "title"
+            elif i == 1:
+                role = "dim"
+            elif i == len(lines) - 1:
+                role = "accent"
+            else:
+                role = "text"
+            safe_addstr(stdscr, y0 + i, 4, line, T(role))
         stdscr.refresh()
 
         k = stdscr.getch()
@@ -271,7 +309,7 @@ def ai_config_menu(stdscr, current_preset):
 
 def confirm(stdscr, prompt) -> bool:
     h, _ = stdscr.getmaxyx()
-    draw_center(stdscr, h - 3, prompt, curses.color_pair(1) | curses.A_BOLD)
+    draw_center(stdscr, h - 3, prompt, T("bad", curses.A_BOLD))
     stdscr.refresh()
     while True:
         k = stdscr.getch()
@@ -281,25 +319,33 @@ def confirm(stdscr, prompt) -> bool:
             return False
 
 
+def draw_field(stdscr, y, x, label, value, value_role="value"):
+    """A ``LABEL : value`` row, with the two halves coloured differently."""
+    safe_addstr(stdscr, y, x, label, T("label"))
+    safe_addstr(stdscr, y, x + len(label), value, T(value_role))
+
+
 def leaderboard_view(stdscr, storage):
     stdscr.nodelay(False)
-    init_colors()
     items = storage.load_leaderboard()
 
     while True:
-        stdscr.clear()
-        stdscr.box()
-        safe_addstr(stdscr, 0, 2, " LEADERBOARD (TOP 10) ", curses.color_pair(1) | curses.A_BOLD)
+        draw_frame(stdscr, " LEADERBOARD (TOP 10) ")
         if not items:
-            draw_center(stdscr, 3, "NO SCORES YET", curses.color_pair(1))
+            draw_center(stdscr, 3, "NO SCORES YET", T("dim"))
         else:
+            safe_addstr(stdscr, 2, 2, f"{'#':>2}  {'SCORE':>5}  {'MODE':<10}  {'DIFF':<6}  WHEN", T("label"))
             for i, item in enumerate(items, start=1):
-                line = (
-                    f"{i:>2}. {item.get('score', 0):>4}  {item.get('mode', '?'):<10}  "
-                    f"{item.get('diff', '?'):<6}  {item.get('ts', '')}"
+                # The podium gets picked out; everything else is plain text.
+                role = "good" if i == 1 else ("accent" if i <= 3 else "text")
+                safe_addstr(stdscr, 2 + i, 2, f"{i:>2}.", T("dim"))
+                safe_addstr(stdscr, 2 + i, 6, f"{item.get('score', 0):>5}", T(role, curses.A_BOLD))
+                safe_addstr(
+                    stdscr, 2 + i, 13,
+                    f"{item.get('mode', '?'):<10}  {item.get('diff', '?'):<6}  {item.get('ts', '')}",
+                    T("text" if i <= 3 else "dim"),
                 )
-                safe_addstr(stdscr, 2 + i, 2, line, curses.color_pair(1))
-        draw_center(stdscr, stdscr.getmaxyx()[0] - 2, "PRESS B TO GO BACK", curses.color_pair(1))
+        draw_center(stdscr, stdscr.getmaxyx()[0] - 2, "PRESS B TO GO BACK", T("dim"))
         stdscr.refresh()
         if stdscr.getch() in (ord("b"), ord("B"), 27):
             return
@@ -307,26 +353,23 @@ def leaderboard_view(stdscr, storage):
 
 def agent_status_view(stdscr, agent, storage, preset):
     stdscr.nodelay(False)
-    init_colors()
-    stdscr.clear()
-    stdscr.box()
-    safe_addstr(stdscr, 0, 2, " AGENT STATUS ", curses.color_pair(1) | curses.A_BOLD)
+    draw_frame(stdscr, " AGENT STATUS ")
     avg_food = agent.total_food / agent.episodes if agent.episodes else 0.0
-    lines = [
-        f"PRESET          : {preset}",
-        f"EPISODES LIVED  : {agent.episodes}",
-        f"FOOD EATEN      : {agent.total_food}  (avg {avg_food:.2f}/episode)",
-        f"KNOWN STATES    : {len(agent.q)}",
-        f"EPSILON         : {agent.epsilon:.4f}",
-        f"DATA DIR        : {storage.dir}",
-        "",
-        "Headless training:",
-        "  python -m serpentos bot --episodes 20000 --preset BOLD",
-        "",
-        "PRESS B TO GO BACK",
+    fields = [
+        ("PRESET          : ", preset, "accent"),
+        ("EPISODES LIVED  : ", f"{agent.episodes}", "value"),
+        ("FOOD EATEN      : ", f"{agent.total_food}  (avg {avg_food:.2f}/episode)", "value"),
+        ("KNOWN STATES    : ", f"{len(agent.q)}", "value"),
+        ("EPSILON         : ", f"{agent.epsilon:.4f}", "value"),
+        ("DATA DIR        : ", storage.dir, "text"),
     ]
-    for i, line in enumerate(lines):
-        safe_addstr(stdscr, 2 + i, 2, line, curses.color_pair(1))
+    for i, (label, value, role) in enumerate(fields):
+        draw_field(stdscr, 2 + i, 2, label, value, role)
+
+    y = 2 + len(fields) + 1
+    safe_addstr(stdscr, y, 2, "Headless training:", T("label"))
+    safe_addstr(stdscr, y + 1, 2, "  python -m serpentos bot --episodes 20000 --preset BOLD", T("accent"))
+    safe_addstr(stdscr, y + 3, 2, "PRESS B TO GO BACK", T("dim"))
     stdscr.refresh()
     while True:
         if stdscr.getch() in (ord("b"), ord("B"), 27):
@@ -349,6 +392,15 @@ def sparkline(values, width=30):
     return out.ljust(width)
 
 
+def draw_progress_bar(stdscr, y, x, fraction, width=30):
+    fraction = max(0.0, min(1.0, fraction))
+    filled = int(round(fraction * width))
+    safe_addstr(stdscr, y, x, "[", T("dim"))
+    safe_addstr(stdscr, y, x + 1, "=" * filled, T("good"))
+    safe_addstr(stdscr, y, x + 1 + filled, "." * (width - filled), T("dim"))
+    safe_addstr(stdscr, y, x + 1 + width, f"] {fraction * 100:3.0f}%", T("label"))
+
+
 def env_for(stdscr, shaping: bool, rng=None) -> core.SnakeEnv:
     """Fit an environment to the window interior (offset by the drawn border)."""
     h, w = stdscr.getmaxyx()
@@ -357,38 +409,65 @@ def env_for(stdscr, shaping: bool, rng=None) -> core.SnakeEnv:
                          shaping=shaping, rng=rng)
 
 
-def render_board(stdscr, env, header):
-    stdscr.clear()
-    stdscr.box()
-    safe_addstr(stdscr, 0, 2, header, curses.color_pair(1) | curses.A_BOLD)
-    for y, x in env.snake:
-        safe_addch(stdscr, y + 1, x + 1, "#", curses.color_pair(1))
+def render_board(stdscr, env, mode_label, diff_name, score):
+    draw_frame(stdscr)
+    safe_addstr(stdscr, 0, 2, f" {mode_label} ", T("title"))
+    x = 4 + len(mode_label)
+    draw_field(stdscr, 0, x, " DIFF: ", f"{diff_name} ", "accent")
+    draw_field(stdscr, 0, x + 8 + len(diff_name), " SCORE: ", f"{score} ", "good")
+
+    length = len(env.snake)
+    theme = _THEME
+    for i, (y, x) in enumerate(env.snake):
+        if i == 0:
+            safe_addch(stdscr, y + 1, x + 1, HEAD_CH, T("head"))
+        else:
+            role = theme.body_role(i, length) if theme is not None else "body"
+            safe_addch(stdscr, y + 1, x + 1, BODY_CH, T(role))
     if env.food is not None:
-        safe_addch(stdscr, env.food[0] + 1, env.food[1] + 1, "*", curses.color_pair(2))
+        safe_addch(stdscr, env.food[0] + 1, env.food[1] + 1, FOOD_CH, T("food"))
 
 
-def draw_ai_hud(stdscr, agent, state, abs_dir, score, steps, diff_name):
+def draw_ai_hud(stdscr, agent, state, abs_dir, steps, diff_name):
     q0, q1, q2 = agent.last_qvals
     bucket = ("short", "medium", "long")[state.length_bucket]
-    lines = [
-        f"MODE: AI(Q)   DIFF: {diff_name}   SCORE: {score}   STEPS: {steps}",
-        f"EPS: {agent.epsilon:.3f}  ALPHA: {agent.alpha:.2f}  GAMMA: {agent.gamma:.2f}  EPISODES: {agent.episodes}",
-        f"STATE: dx={state.dx} dy={state.dy}  danger(a,l,r)="
-        f"({state.danger_ahead},{state.danger_left},{state.danger_right})  "
-        f"dir={state.direction}  wall={state.wall_dist}  len={bucket}",
-        f"ACTION: rel={agent.last_action} abs={abs_dir}  REWARD: {agent.last_reward:+.2f}",
-        f"Q: straight={q0:+.2f}  left={q1:+.2f}  right={q2:+.2f}",
-        "HUD: H toggle   Q quit",
-    ]
-    for i, line in enumerate(lines):
-        safe_addstr(stdscr, 1 + i, 2, line, curses.color_pair(1) | (curses.A_BOLD if i == 0 else 0))
+    danger = (state.danger_ahead, state.danger_left, state.danger_right)
+
+    draw_field(stdscr, 1, 2, "STEPS: ", f"{steps}")
+    draw_field(stdscr, 1, 18, "EPISODES: ", f"{agent.episodes}")
+    draw_field(stdscr, 1, 40, "EPS: ", f"{agent.epsilon:.3f}")
+    draw_field(stdscr, 1, 54, "a/g: ", f"{agent.alpha:.2f}/{agent.gamma:.2f}")
+
+    draw_field(stdscr, 2, 2, "FOOD: ", f"dx={state.dx:+d} dy={state.dy:+d}")
+    safe_addstr(stdscr, 2, 22, "DANGER: ", T("label"))
+    # Each danger bit is coloured on its own: red means that turn kills.
+    for i, (name, bit) in enumerate(zip(("a", "l", "r"), danger)):
+        safe_addstr(stdscr, 2, 30 + i * 4, f"{name}{bit}", T("bad" if bit else "good"))
+    draw_field(stdscr, 2, 44, "dir: ", state.direction)
+    draw_field(stdscr, 2, 54, "wall: ", str(state.wall_dist))
+    draw_field(stdscr, 2, 64, "len: ", bucket)
+
+    draw_field(stdscr, 3, 2, "ACTION: ", f"rel={agent.last_action} abs={abs_dir}")
+    draw_field(stdscr, 3, 26, "REWARD: ", f"{agent.last_reward:+.2f}",
+               "good" if agent.last_reward > 0 else ("bad" if agent.last_reward <= -1 else "dim"))
+
+    # Highlight whichever action the agent rates highest.
+    qvals = (q0, q1, q2)
+    best = max(qvals)
+    safe_addstr(stdscr, 4, 2, "Q: ", T("label"))
+    for i, (name, value) in enumerate(zip(("straight", "left", "right"), qvals)):
+        chosen = value == best
+        safe_addstr(stdscr, 4, 6 + i * 20, f"{name}=", T("label"))
+        safe_addstr(stdscr, 4, 6 + i * 20 + len(name) + 1, f"{value:+.2f}",
+                    T("good" if chosen else "dim", curses.A_BOLD if chosen else 0))
+
+    safe_addstr(stdscr, 5, 2, "H toggle HUD   Q quit", T("dim"))
 
 
 # =========================
 # GAME LOOPS
 # =========================
 def play_human(stdscr, speed, diff_name):
-    init_colors()
     env = env_for(stdscr, shaping=False)
     stdscr.nodelay(True)
 
@@ -399,7 +478,7 @@ def play_human(stdscr, speed, diff_name):
     }
 
     while True:
-        render_board(stdscr, env, f" HUMAN  DIFF: {diff_name}  SCORE: {env.score} ")
+        render_board(stdscr, env, "HUMAN", diff_name, env.score)
         stdscr.refresh()
 
         direction = env.direction
@@ -411,14 +490,13 @@ def play_human(stdscr, speed, diff_name):
 
         _, _, done, info = env.step_dir(direction)
         if done:
-            render_board(stdscr, env, f" HUMAN  DIFF: {diff_name}  SCORE: {env.score} ")
+            render_board(stdscr, env, "HUMAN", diff_name, env.score)
             stdscr.refresh()
             return info.score, False
         time.sleep(speed)
 
 
 def play_ai(stdscr, speed, diff_name, agent, shaping):
-    init_colors()
     env = env_for(stdscr, shaping=shaping)
     stdscr.nodelay(True)
     hud = {"on": True}
@@ -429,10 +507,10 @@ def play_ai(stdscr, speed, diff_name, agent, shaping):
             return False
         if k in (ord("h"), ord("H")):
             hud["on"] = not hud["on"]
-        render_board(stdscr, env, f" AI(Q)  DIFF: {diff_name}  SCORE: {env.score} ")
+        render_board(stdscr, env, "AI(Q)", diff_name, env.score)
         if hud["on"]:
             abs_dir = core.rel_to_abs(t.state.direction, t.action)
-            draw_ai_hud(stdscr, agent, t.state, abs_dir, env.score, t.info.steps, diff_name)
+            draw_ai_hud(stdscr, agent, t.state, abs_dir, t.info.steps, diff_name)
         stdscr.refresh()
         time.sleep(speed)
         return True
@@ -443,7 +521,6 @@ def play_ai(stdscr, speed, diff_name, agent, shaping):
 
 def train(stdscr, agent, storage, episodes, diff_name, shaping, preset, turbo=False):
     """Headless-speed training with a periodic progress panel."""
-    init_colors()
     stdscr.nodelay(True)
     env = env_for(stdscr, shaping=shaping)
 
@@ -473,15 +550,19 @@ def train(stdscr, agent, storage, episodes, diff_name, shaping, preset, turbo=Fa
 
             if ep == 1 or ep % ui_every == 0 or ep == episodes:
                 log.flush()
-                stdscr.clear()
-                stdscr.box()
-                safe_addstr(stdscr, 0, 2, f" TRAINING ({label}) ", curses.color_pair(1) | curses.A_BOLD)
-                safe_addstr(stdscr, 2, 2, f"DIFF: {diff_name}  SHAPING: {'ON' if shaping else 'OFF'}", curses.color_pair(1))
-                safe_addstr(stdscr, 3, 2, f"EPISODE: {ep}/{episodes}", curses.color_pair(1) | curses.A_BOLD)
-                safe_addstr(stdscr, 4, 2, f"AVG (last 50): {avg:.2f}   BEST: {best}", curses.color_pair(1))
-                safe_addstr(stdscr, 5, 2, f"EPS: {agent.epsilon:.3f}   STATES: {len(agent.q)}", curses.color_pair(1))
-                safe_addstr(stdscr, 6, 2, f"SCORES: {sparkline(window)}", curses.color_pair(1))
-                safe_addstr(stdscr, 8, 2, "PRESS Q TO ABORT", curses.color_pair(1))
+                draw_frame(stdscr, f" TRAINING ({label}) ")
+                draw_field(stdscr, 2, 2, "DIFF: ", diff_name, "accent")
+                draw_field(stdscr, 2, 20, "SHAPING: ", "ON" if shaping else "OFF",
+                           "good" if shaping else "dim")
+                draw_field(stdscr, 3, 2, "EPISODE: ", f"{ep}/{episodes}")
+                draw_progress_bar(stdscr, 3, 26, ep / episodes, width=30)
+                draw_field(stdscr, 4, 2, "AVG (last 50): ", f"{avg:.2f}")
+                draw_field(stdscr, 4, 26, "BEST: ", f"{best}", "good")
+                draw_field(stdscr, 5, 2, "EPS: ", f"{agent.epsilon:.3f}")
+                draw_field(stdscr, 5, 26, "STATES: ", f"{len(agent.q)}")
+                safe_addstr(stdscr, 6, 2, "SCORES: ", T("label"))
+                safe_addstr(stdscr, 6, 10, sparkline(window), T("spark"))
+                safe_addstr(stdscr, 8, 2, "PRESS Q TO ABORT", T("dim"))
                 stdscr.refresh()
 
     save_checkpoint(storage, agent, stdscr, preset)
@@ -495,7 +576,7 @@ def save_checkpoint(storage, agent, stdscr=None, preset=None):
     except OSError as exc:
         if stdscr is not None:
             h, _ = stdscr.getmaxyx()
-            safe_addstr(stdscr, h - 2, 2, f"WARNING: could not save progress: {exc}", curses.A_BOLD)
+            safe_addstr(stdscr, h - 2, 2, f"WARNING: could not save progress: {exc}", T("bad", curses.A_BOLD))
             stdscr.refresh()
 
 
@@ -505,11 +586,10 @@ def save_checkpoint(storage, agent, stdscr=None, preset=None):
 def game_over_screen(stdscr, score):
     stdscr.nodelay(False)
     h, _ = stdscr.getmaxyx()
-    stdscr.clear()
-    stdscr.box()
-    draw_center(stdscr, h // 2 - 2, "GAME OVER", curses.A_BOLD)
-    draw_center(stdscr, h // 2, f"SCORE: {score}")
-    draw_center(stdscr, h // 2 + 2, "PLAY AGAIN? (Y/N)")
+    draw_frame(stdscr)
+    draw_center(stdscr, h // 2 - 2, "GAME OVER", T("bad", curses.A_BOLD))
+    draw_center(stdscr, h // 2, f"SCORE: {score}", T("good", curses.A_BOLD))
+    draw_center(stdscr, h // 2 + 2, "PLAY AGAIN? (Y/N)", T("accent"))
     stdscr.refresh()
     while True:
         k = stdscr.getch()
@@ -520,18 +600,15 @@ def game_over_screen(stdscr, score):
 
 
 def post_training_screen(stdscr, storage, best, aborted, turbo=False):
-    init_colors()
     stdscr.nodelay(False)
-    stdscr.clear()
-    stdscr.box()
     title = " TRAINING COMPLETE (TURBO) " if turbo else " TRAINING COMPLETE (FAST) "
-    safe_addstr(stdscr, 0, 2, title, curses.color_pair(1) | curses.A_BOLD)
-    safe_addstr(stdscr, 3, 2, f"BEST SCORE: {best}", curses.color_pair(1))
+    draw_frame(stdscr, title)
+    draw_field(stdscr, 3, 2, "BEST SCORE: ", str(best), "good")
     if aborted:
-        safe_addstr(stdscr, 4, 2, "STATUS: ABORTED BY USER", curses.color_pair(1))
-    safe_addstr(stdscr, 5, 2, f"LOG: {storage.training_log_path}", curses.color_pair(1))
-    safe_addstr(stdscr, 7, 2, "1  PLAY TRAINED AI NOW", curses.color_pair(1) | curses.A_BOLD)
-    safe_addstr(stdscr, 8, 2, "B  BACK", curses.color_pair(1) | curses.A_BOLD)
+        draw_field(stdscr, 4, 2, "STATUS: ", "ABORTED BY USER", "bad")
+    draw_field(stdscr, 5, 2, "LOG: ", storage.training_log_path, "text")
+    draw_menu_line(stdscr, 7, "1  PLAY TRAINED AI NOW", True, x=2)
+    draw_menu_line(stdscr, 8, "B  BACK", True, x=2)
     stdscr.refresh()
     while True:
         k = stdscr.getch()
@@ -544,7 +621,11 @@ def post_training_screen(stdscr, storage, best, aborted, turbo=False):
 # =========================
 # APP
 # =========================
-def run_ui(stdscr, storage):
+def run_ui(stdscr, storage, color=True):
+    global _THEME
+    _THEME = Theme(enabled=color)
+
+    hide_cursor()
     if not size_warning(stdscr):
         return
     boot_animation(stdscr)
@@ -616,15 +697,19 @@ def run_ui(stdscr, storage):
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="serpentos", description="SerpentOS terminal UI")
+    parser = argparse.ArgumentParser(
+        prog="serpentos run", description="Play SerpentOS in the terminal."
+    )
     parser.add_argument("--data-dir", default=None,
                         help=f"state directory (default: {core.DEFAULT_DATA_DIR})")
+    parser.add_argument("--no-color", dest="color", action="store_false",
+                        help="disable colour (also honours the NO_COLOR environment variable)")
     args = parser.parse_args(argv)
 
     storage = core.Storage(args.data_dir)
     try:
         with storage.lock(owner="ui"):
-            curses.wrapper(run_ui, storage)
+            curses.wrapper(run_ui, storage, args.color)
     except core.LockError as exc:
         sys.stderr.write(f"{exc}\n")
         return 2

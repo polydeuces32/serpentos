@@ -4,7 +4,8 @@ The learning core imports nothing platform-specific, so the agent runs anywhere 
 
 ```bash
 python -m serpentos bot [options]
-serpentos bot [options]          # if installed with pip
+serpentos bot [options]           # if installed with pip
+serpentos bench [options]         # shorthand for `bot --bench`
 ```
 
 ---
