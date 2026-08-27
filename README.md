@@ -4,6 +4,20 @@ A terminal snake game with a built-in Q-learning AI. Watch the agent learn in re
 
 ---
 
+## Who this is for
+
+**Anyone learning reinforcement learning by watching it happen.** The AI HUD shows the agent's actual state, its three Q-values and the reward for every step, so "exploration versus exploitation" stops being a phrase and becomes something on screen. There is no PyTorch, no GPU, no CUDA and no account — clone it and it runs.
+
+**People who want to tinker with hyperparameters and see the consequence.** Four presets, a shaping toggle, a live score sparkline and a CSV of every episode. Change `alpha`, run 2,000 episodes, compare the curves.
+
+**Terminal-dwellers who want a good-looking snake game.** It plays fine as a game and never leaves the shell.
+
+**Anyone who wants a small, complete codebase to read.** Roughly 1,500 lines of standard-library Python: an environment, a tabular agent, atomic persistence, a headless runner, a reproducible benchmark and a test suite. Small enough to read in one sitting, structured enough to be worth reading.
+
+It is **not** a serious RL research tool. Tabular Q-learning over eight state features has a hard ceiling, and [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) is candid about where that ceiling is and why.
+
+---
+
 ## Features
 
 - **Human mode** — classic snake with arrow keys or WASD
@@ -28,11 +42,22 @@ A terminal snake game with a built-in Q-learning AI. Watch the agent learn in re
 git clone https://github.com/polydeuces32/serpentos.git
 cd serpentos
 
-python3 serpentos/serpentos.py              # play
+python3 -m serpentos run                    # play
 python3 -m serpentos bot --episodes 5000    # train with no UI
 ```
 
 Python 3.9 or newer. No packages to install on macOS or Linux.
+
+## Commands
+
+| Command | What it does |
+|---------|-------------|
+| `serpentos run` | Play in the terminal. The default when no command is given. |
+| `serpentos bot` | Train, evaluate or export a policy with no terminal at all. |
+| `serpentos bench` | Score the current policy on the frozen benchmark. |
+| `serpentos help` | List the commands. |
+
+Every command takes `--help`. Without installing, put `python3 -m ` in front of any of them. The single-file invocation `python3 serpentos/serpentos.py` still works too.
 
 ---
 
@@ -62,7 +87,7 @@ Option B — download the ZIP:
 
 **3. Run**
 ```bash
-python3 serpentos/serpentos.py
+python3 -m serpentos run
 ```
 
 ---
@@ -149,6 +174,22 @@ The terminal must be at least **40x14**. Below that SerpentOS shows a resize pro
 
 ---
 
+## Colours
+
+SerpentOS picks a palette from what your terminal reports and never assumes more than it has:
+
+| Terminal | What you get |
+|----------|-------------|
+| 256-colour (`xterm-256color`, most modern terminals) | Full palette: the snake is a green gradient from a bright `@` head to a darker tail, food is red, the border is dim grey, and HUD labels, values and warnings each get their own colour |
+| 8-colour (`xterm`, `linux`) | The same layout in the eight ANSI colours, using bold for the bright variants |
+| Monochrome (`vt100`, `TERM=dumb`) | No colour at all — bold, dim and reverse video keep the screen readable |
+
+Turn it off with `serpentos run --no-color`, or by setting [`NO_COLOR`](https://no-color.org) in your environment.
+
+In the AI HUD the colours carry information rather than decoration: each danger bit is green when that turn is safe and red when it kills, the reward is green when positive and red on a death, and the action the agent rates highest is the highlighted one.
+
+---
+
 ## AI training
 
 ### Presets
@@ -223,6 +264,7 @@ Checkpoints are written atomically, so killing the process mid-save cannot corru
 | `ModuleNotFoundError: No module named '_curses'` | Windows: `pip install windows-curses`, or use WSL, or run the headless agent |
 | `TERMINAL TOO SMALL` | Resize to at least 40x14 |
 | `... is in use by bot (pid N)` | Another agent or game owns the data directory. Stop it, or pass `--data-dir` |
+| No colours | Check `echo $TERM` and `echo $NO_COLOR`. `TERM=dumb` or any non-empty `NO_COLOR` disables colour by design |
 | Colours look wrong or the box is broken | Set `TERM=xterm-256color`; on Windows use Windows Terminal, not `cmd.exe` |
 | The AI plays badly after training | Check `python -m serpentos bot --bench`. A fresh table scores ~0; 3,000 episodes on `BOLD` reaches a mean around 10, and 8,000 around 12 |
 | Training feels slow | Use the headless agent, which does not render at all |
@@ -235,7 +277,7 @@ Checkpoints are written atomically, so killing the process mid-save cannot corru
 python -m unittest discover -s tests -v
 ```
 
-62 tests, standard library only, no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
+88 tests, standard library only, no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

@@ -19,6 +19,8 @@ Python 3.9 or newer. Nothing to install.
 | `serpentos/core.py` | Game rules, the Q-learning agent, persistence, benchmark. No curses. |
 | `serpentos/bot.py` | The headless agent and its CLI. |
 | `serpentos/serpentos.py` | The terminal UI. Drawing only — no rules. |
+| `serpentos/theme.py` | Colour palettes and the 256/8/monochrome fallback. |
+| `serpentos/__main__.py` | Command dispatch for `run`, `bot` and `bench`. |
 | `tests/` | Standard library `unittest`. |
 
 The one architectural rule: **`core.py` must never import curses, and the UI must never contain game rules.** That split is what lets the same learning run in a terminal, in CI and in a container, and it is what makes the tests possible.
@@ -33,6 +35,8 @@ The one architectural rule: **`core.py` must never import curses, and the UI mus
 - Match the surrounding style: 4-space indent, `snake_case`, comments only where the code cannot explain itself.
 
 If you touch the environment, the state encoding or the benchmark, say so explicitly in the PR — those change published scores.
+
+If you touch the UI, never hard-code a colour. Add or reuse a role in `serpentos/theme.py` so the screen still works on an 8-colour terminal and in monochrome, and check it with `TERM=vt100 serpentos run`.
 
 ---
 
