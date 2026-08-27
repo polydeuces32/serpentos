@@ -64,28 +64,26 @@ class DispatchTest(unittest.TestCase):
         self.assertIn("mean_score", result)
         self.assertIn("fingerprint", result)
 
-    def test_run_command_reaches_the_ui_parser(self):
-        # --help makes argparse exit before any terminal is touched.
-        with self.assertRaises(SystemExit) as caught:
-            self.run_cli(["run", "--help"])
-        self.assertEqual(caught.exception.code, 0)
+    def test_run_command_reaches_the_ui_help(self):
+        code, out, _ = self.run_cli(["run", "--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("usage: serpentos run", out)
 
     def test_play_is_an_alias_for_run(self):
-        with self.assertRaises(SystemExit) as caught:
-            self.run_cli(["play", "--help"])
-        self.assertEqual(caught.exception.code, 0)
+        code, out, _ = self.run_cli(["play", "--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("usage: serpentos run", out)
 
     def test_bare_flags_still_reach_the_ui(self):
-        """`serpentos --data-dir X` kept working when subcommands were added."""
-        with self.assertRaises(SystemExit) as caught:
-            self.run_cli(["--data-dir", self.data_dir, "--help"])
-        self.assertEqual(caught.exception.code, 0)
+        """`serpentos --data-dir X` remains a UI invocation."""
+        code, out, _ = self.run_cli(["--data-dir", self.data_dir, "--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("usage: serpentos run", out)
 
     def test_ui_accepts_no_color(self):
-        out = io.StringIO()
-        with self.assertRaises(SystemExit), redirect_stdout(out):
-            cli.main(["run", "--help"])
-        self.assertIn("--no-color", out.getvalue())
+        code, out, _ = self.run_cli(["run", "--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("--no-color", out)
 
 
 if __name__ == "__main__":
