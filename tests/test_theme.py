@@ -40,13 +40,13 @@ class PaletteTest(unittest.TestCase):
         for role, (fg, _) in theme.PALETTE_MONO.items():
             self.assertIsNone(fg, f"{role} should not set a colour in monochrome")
 
-    def test_attribute_names_exist_in_curses(self):
-        import curses
-
+    def test_attribute_names_resolve_on_this_platform(self):
+        disabled = theme.Theme(enabled=False, environ={})
+        attrs = disabled._curses
         for palette in (theme.PALETTE_256, theme.PALETTE_8, theme.PALETTE_MONO):
             for role, (_, attr) in palette.items():
                 if attr is not None:
-                    self.assertTrue(hasattr(curses, attr), f"{role} wants curses.{attr}")
+                    self.assertTrue(hasattr(attrs, attr), f"{role} wants {attr}")
 
 
 class NoColorTest(unittest.TestCase):
@@ -79,16 +79,14 @@ class ThemeTest(unittest.TestCase):
         self.assertEqual(self.theme("no-such-role"), 0)
 
     def test_extra_attributes_are_merged(self):
-        import curses
-
-        self.assertTrue(self.theme("text", curses.A_UNDERLINE) & curses.A_UNDERLINE)
+        underline = self.theme._curses.A_UNDERLINE
+        self.assertTrue(self.theme("text", underline) & underline)
 
     def test_disabled_theme_still_distinguishes_roles(self):
-        import curses
-
-        self.assertTrue(self.theme("title") & curses.A_BOLD)
-        self.assertTrue(self.theme("dim") & curses.A_DIM)
-        self.assertTrue(self.theme("head") & curses.A_REVERSE)
+        attrs = self.theme._curses
+        self.assertTrue(self.theme("title") & attrs.A_BOLD)
+        self.assertTrue(self.theme("dim") & attrs.A_DIM)
+        self.assertTrue(self.theme("head") & attrs.A_REVERSE)
 
     def test_body_shading_runs_head_to_tail(self):
         self.assertEqual(self.theme.body_role(1, 10), "body")
