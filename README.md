@@ -1,10 +1,18 @@
 # SerpentOS
 
-A terminal snake game with a built-in Q-learning AI. Watch the agent learn in real time, train it through thousands of episodes, or let it run on its own with no terminal at all — from your terminal, with zero dependencies.
+**A policy runtime you can embed in a Python project, and a terminal snake game that demonstrates it.**
+
+Two things live in this repository, and it is worth knowing which one you came for.
+
+**[The runtime](#using-serpentos-as-a-library)** is a small standard-library kernel for decision logic: define a policy, run it under guardrails, record what it decided, and prove later that it still decides the same way. No dependencies, no services, no machine learning required.
+
+**The game** is the reference environment — a complete, honest example of an application with state, actions, a learned policy, persistence and a reproducible benchmark. Play it, train it, or read it as a worked example.
 
 ---
 
 ## Who this is for
+
+**Engineers with decision logic scattered through their codebase.** Retry strategies, queue prioritisation, routing rules, feature rollout — the ones that are three nested `if` statements today, untested, unlogged and impossible to change safely. The runtime gives them a shape: a policy that proposes, a validator that gates, an audit record that explains, and replay that tells you whether your change would have altered anything. See **[docs/RUNTIME.md](docs/RUNTIME.md)**.
 
 **Anyone learning reinforcement learning by watching it happen.** The AI HUD shows the agent's actual state, its three Q-values and the reward for every step, so "exploration versus exploitation" stops being a phrase and becomes something on screen. There is no PyTorch, no GPU, no CUDA and no account — clone it and it runs.
 
@@ -12,14 +20,73 @@ A terminal snake game with a built-in Q-learning AI. Watch the agent learn in re
 
 **Terminal-dwellers who want a good-looking snake game.** It plays fine as a game and never leaves the shell.
 
-**Anyone who wants a small, complete codebase to read.** Roughly 1,500 lines of standard-library Python: an environment, a tabular agent, atomic persistence, a headless runner, a reproducible benchmark and a test suite. Small enough to read in one sitting, structured enough to be worth reading.
+**Anyone who wants a small, complete codebase to read.** Standard-library Python throughout: an environment, a tabular agent, atomic persistence, a headless runner, a reproducible benchmark, a policy runtime and a test suite. Small enough to read in one sitting, structured enough to be worth reading.
 
 It is **not** a serious RL research tool. Tabular Q-learning over eight state features has a hard ceiling, and [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md) is candid about where that ceiling is and why.
 
 ---
 
+## Using SerpentOS as a library
+
+Install it, import it, decide something:
+
+```python
+from serpentos import ActionValidator, DecisionContext, DecisionEngine
+from serpentos.policies import Rule, RulePolicy, when
+
+policy = RulePolicy(
+    name="retry-policy",
+    version="1.0",
+    rules=[
+        Rule("fail",  when("attempts", "ge", 3),               name="give-up"),
+        Rule("retry", when("status_code", "in", [503, 504]),   name="retry-5xx"),
+    ],
+    default_action="fail",
+)
+
+engine = DecisionEngine(
+    policy=policy,
+    validator=ActionValidator(allowed_actions={"retry", "fail"}),
+)
+
+decision = engine.decide(DecisionContext(values={"attempts": 2, "status_code": 503}))
+print(decision.action)  # retry
+```
+
+Four concepts, and that is the whole model:
+
+**A context** is what the policy is allowed to see — a plain JSON object you build from whatever your application knows. It is deeply immutable, so handing the same context to five policies cannot let one corrupt it for the others.
+
+**A policy** is a pure function from a context to a decision. It proposes; it never acts. That restriction is what makes everything below it possible — a policy that talks to the network cannot be replayed, compared offline or trusted to behave the same twice.
+
+**A decision** is what the policy proposed, stamped with the policy's name and version and carrying whatever metadata explains the choice. Your application decides whether to execute it. The runtime never does.
+
+**Validation** is the allow-list standing between the proposal and your application. It lives with you, not with the policy, so a policy cannot widen its own permissions. A rejected action raises `DecisionValidationError` rather than being quietly swapped for something safe — silently rewriting a decision is how you get an audit log that does not describe what happened. If you want a substitute, configure a `fallback_policy` explicitly and both attempts are recorded.
+
+**Audit and replay** are the payoff. Attach a sink and every decision becomes a JSON record: who decided, on what evidence, what the guardrails said. Feed those records back through `replay()` and you get a straight answer to "would my change have decided anything differently?"
+
+```python
+from serpentos import InMemoryAuditLog, replay_all
+
+audit = InMemoryAuditLog(redact=["authorization"])          # never log the token
+engine = DecisionEngine(policy, audit_sink=audit)
+...
+report = replay_all(revised_policy, audit.records, strict=False)
+print(report.matched, report.mismatched)
+```
+
+Three policy implementations ship with it. `RulePolicy` is ordered conditions over a closed set of operators, so a rule set loaded from a JSON file is data and cannot execute. `WeightedPolicy` scores every candidate action and takes the highest, from callbacks or from pure linear weights. `QLearningPolicy` is a read-only adapter over the snake agent — proof that a learned policy and a hand-written one can sit behind the same interface.
+
+**How Snake relates to all this.** It is the reference environment, not the centre. `serpentos.environments.snake` shows the full integration: turning game state into a context, executing the action the engine returns, reporting the outcome. The most useful thing in it is `survival_policy()` — eight hand-written rules that play the game through the same engine as the trained agent, and average **36.9** food per episode against **0.05** for an untrained Q-table. Nothing about the runtime is shaped around machine learning.
+
+Full architecture, guarantees, security model and limitations: **[docs/RUNTIME.md](docs/RUNTIME.md)**.
+
+---
+
 ## Features
 
+- **Policy runtime** — context → policy → decision → outcome, with validation, audit, replay and comparison
+- **Three policy types** — ordered rules, weighted scoring, and the Q-learning adapter, all behind one interface
 - **Human mode** — classic snake with arrow keys or WASD
 - **AI mode** — tabular Q-learning agent with a live thinking HUD
 - **Headless agent** — trains itself with no screen, survives SIGTERM, checkpoints as it goes
@@ -184,7 +251,7 @@ SerpentOS picks a palette from what your terminal reports and never assumes more
 | 8-colour (`xterm`, `linux`) | The same layout in the eight ANSI colours, using bold for the bright variants |
 | Monochrome (`vt100`, `TERM=dumb`) | No colour at all — bold, dim and reverse video keep the screen readable |
 
-Turn it off with `serpentos run --no-color`, or by setting [`NO_COLOR`](https://no-color.org) in your environment.
+Turn it off with `serpentos run --no-color`, or by setting [`NO_COLOR`](https://no-color.org) in your environment. That means *no* colour: the screen is drawn entirely with your terminal's own foreground and background, so a light-background theme stays light.
 
 In the AI HUD the colours carry information rather than decoration: each danger bit is green when that turn is safe and red when it kills, the reward is green when positive and red on a death, and the action the agent rates highest is the highlighted one.
 
@@ -277,7 +344,7 @@ Checkpoints are written atomically, so killing the process mid-save cannot corru
 python -m unittest discover -s tests -v
 ```
 
-88 tests, standard library only, no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
+389 tests, standard library only, no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

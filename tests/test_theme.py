@@ -1,12 +1,23 @@
 """Tests for palette selection and colour fallback."""
 
 import os
+import re
+import select
+import subprocess
 import sys
+import tempfile
+import time
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 
 from serpentos import theme  # noqa: E402
+
+try:
+    import pty
+except ImportError:  # pragma: no cover - Windows has no pty
+    pty = None
 
 
 class PaletteTest(unittest.TestCase):
@@ -94,6 +105,70 @@ class ThemeTest(unittest.TestCase):
 
     def test_body_shading_handles_a_one_cell_snake(self):
         self.assertEqual(self.theme.body_role(0, 1), "body")
+
+
+@unittest.skipIf(pty is None, "needs a pty")
+class LiveTerminalTest(unittest.TestCase):
+    """Drive the real UI through a pty and inspect the bytes it emits.
+
+    Palette selection is a pure function and tested above; what cannot be tested
+    that way is what ncurses actually puts on the wire.
+    """
+
+    SGR = re.compile(r"\x1b\[[0-9;]*m")
+    # Any SGR that sets a foreground or background colour.
+    COLOUR_SGR = re.compile(r"\x1b\[[0-9;]*?(?:3[0-7]|4[0-7]|9[0-7]|10[0-7]|38;5;|48;5;)[0-9;]*m")
+
+    def drive(self, *args, term="xterm-256color", seconds=2.5):
+        env = dict(os.environ, TERM=term, LINES="30", COLUMNS="100")
+        env.pop("NO_COLOR", None)
+        master, slave = pty.openpty()
+        process = subprocess.Popen(
+            [sys.executable, "-m", "serpentos", "run", *args,
+             "--data-dir", tempfile.mkdtemp()],
+            stdin=slave, stdout=slave, stderr=slave, env=env, cwd=REPO,
+        )
+        os.close(slave)
+        output = b""
+        deadline = time.time() + seconds
+        try:
+            while time.time() < deadline:
+                readable, _, _ = select.select([master], [], [], 0.2)
+                if not readable:
+                    continue
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output += chunk
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover
+                process.kill()
+            os.close(master)
+        return output.decode("utf-8", "replace")
+
+    def test_the_ui_paints_without_crashing(self):
+        text = self.drive()
+        self.assertNotIn("Traceback", text)
+        self.assertTrue(self.COLOUR_SGR.search(text), "expected colour on a 256-colour terminal")
+
+    def test_no_color_emits_no_colour_at_all(self):
+        # curses.wrapper() starts colour before the theme is built, so a
+        # colour-capable ncurses will happily reset to its own white-on-black
+        # unless it is told to keep the terminal's defaults.
+        text = self.drive("--no-color")
+        self.assertNotIn("Traceback", text)
+        found = self.COLOUR_SGR.findall(text)
+        self.assertEqual(found, [], f"--no-color still emitted {sorted(set(found))}")
+
+    def test_a_monochrome_terminal_does_not_crash(self):
+        text = self.drive(term="vt100")
+        self.assertNotIn("Traceback", text)
 
 
 if __name__ == "__main__":
