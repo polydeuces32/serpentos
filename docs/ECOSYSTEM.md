@@ -57,10 +57,14 @@ The rule that makes this work: **the score in the table is always the one CI com
 
 This is the real risk, and it is worth being blunt about. Tabular Q-learning over eight state fields has a hard ceiling. The agent sees danger in three directions, the food's quadrant, its distance to the wall ahead and a coarse length bucket. It cannot see the shape of its own body. Once the snake is long enough to trap itself, no amount of training fixes that, because the information needed is not in the state.
 
+The clearest evidence arrived while building the policy runtime. `survival_policy()` in `serpentos.environments.snake` is eight hand-written rules — turn away from a wall, otherwise steer towards the food — and on the standard 22x78 grid it averages **36.9** food per episode. A Q-table trained for 1,500 episodes averages **11.9**. Eight if-statements written in an afternoon beat the learning by a factor of three, and the reason is not that the learning is badly implemented: it is that the observation is too impoverished for the credit assignment to work, while the same observation is perfectly adequate for a human to write greedy rules over.
+
+That is worth stating plainly on a project whose headline feature is a learning agent.
+
 A leaderboard where everyone converges to the same number within a week is a dead leaderboard. Two ways to create headroom, and the project probably needs both:
 
 - **Open the state.** Let a submission declare which features it uses. A richer state is a bigger table, which is a fair trade to compete on.
-- **Open the algorithm.** Define the benchmark against the *environment* rather than the agent, so anything that maps an observation to one of three actions can enter: DQN, Monte Carlo tree search, a hand-written Hamiltonian cycle solver. This needs a stable `Agent` protocol (`act(state) -> int`) and a documented observation, neither of which exists yet.
+- **Open the algorithm.** Define the benchmark against the *environment* rather than the agent, so anything that maps an observation to one of three actions can enter: DQN, Monte Carlo tree search, a hand-written Hamiltonian cycle solver. Since 2.0 the stable `Policy` protocol and the `DecisionContext` built by `context_from_state()` are exactly that missing piece — a documented observation and a documented interface — so this is now a benchmark-design problem rather than an architecture problem.
 
 Opening the algorithm means running submitted code, which forfeits the safety property above. The clean resolution is two tracks:
 

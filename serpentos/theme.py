@@ -132,12 +132,16 @@ class Theme:
             self.colors = 0
 
         palette = palette_for(self.colors)
+        # Attempted even when colour is disabled. curses.wrapper() calls
+        # start_color() before we get here, and a colour-capable ncurses that
+        # has not been told to keep the terminal's defaults resets to its own
+        # assumed white-on-black — which would repaint the screen of someone who
+        # asked for --no-color on a light background.
         background = -1
-        if self.enabled:
-            try:
-                curses.use_default_colors()
-            except curses.error:
-                background = curses.COLOR_BLACK
+        try:
+            curses.use_default_colors()
+        except curses.error:
+            background = curses.COLOR_BLACK
 
         pair = 0
         for role in ROLES:

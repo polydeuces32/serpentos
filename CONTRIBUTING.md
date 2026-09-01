@@ -16,14 +16,26 @@ Python 3.9 or newer. Nothing to install.
 
 | Path | What it holds |
 |------|---------------|
+| `serpentos/runtime/` | The policy runtime: models, engine, validation, audit, replay, comparison. |
+| `serpentos/policies/` | `RulePolicy`, `WeightedPolicy` and the read-only Q-learning adapter. |
+| `serpentos/environments/snake/` | Snake as a consumer of the runtime, plus the hand-written rule policy. |
 | `serpentos/core.py` | Game rules, the Q-learning agent, persistence, benchmark. No curses. |
 | `serpentos/bot.py` | The headless agent and its CLI. |
 | `serpentos/serpentos.py` | The terminal UI. Drawing only — no rules. |
 | `serpentos/theme.py` | Colour palettes and the 256/8/monochrome fallback. |
 | `serpentos/__main__.py` | Command dispatch for `run`, `bot` and `bench`. |
+| `examples/` | Standalone scripts using the runtime for something other than Snake. |
 | `tests/` | Standard library `unittest`. |
 
-The one architectural rule: **`core.py` must never import curses, and the UI must never contain game rules.** That split is what lets the same learning run in a terminal, in CI and in a container, and it is what makes the tests possible.
+Three architectural rules, each with a test that enforces it:
+
+1. **`serpentos/runtime/` must not import Snake.** Not `core`, not `bot`, not the UI, not `random` for decision-making. The runtime is the reusable part; the moment it knows about the game, it stops being reusable. `import serpentos` must not pull the game in either.
+2. **`core.py` must never import curses, and the UI must never contain game rules.** That split is what lets the same learning run in a terminal, in CI and in a container.
+3. **Policies must not perform side effects.** No writes, no network, no clock reads, no mutating the context. Replay and comparison are only meaningful because of this.
+
+A fourth rule that is not architectural but is just as binding: **the public API surface is pinned.** `tests/test_api_surface.py` enumerates every name `serpentos` and `serpentos.policies` export. Adding one means updating that list and recording its stability tier; removing or renaming one is a breaking change that needs a major version. See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+See [docs/DECISION_ENGINE.md](docs/DECISION_ENGINE.md) for the full architecture.
 
 ---
 
@@ -37,6 +49,8 @@ The one architectural rule: **`core.py` must never import curses, and the UI mus
 If you touch the environment, the state encoding or the benchmark, say so explicitly in the PR — those change published scores.
 
 If you touch the UI, never hard-code a colour. Add or reuse a role in `serpentos/theme.py` so the screen still works on an 8-colour terminal and in monochrome, and check it with `TERM=vt100 serpentos run`.
+
+If you touch the runtime, two things get scrutinised: anything that could execute data, and anything that widens what a serialised policy can express. The rule-condition operator set is closed on purpose — adding an operator is a code change and a review, never a config change — and `eval`, `exec`, `pickle` and `__import__` are banned outright by a test.
 
 ---
 
