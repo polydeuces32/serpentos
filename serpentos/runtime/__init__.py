@@ -22,7 +22,9 @@ of it.
 from __future__ import annotations
 
 from .audit import (
+    AUDIT_SCHEMA_VERSION,
     REDACTED,
+    SUPPORTED_AUDIT_SCHEMA_VERSIONS,
     AuditRecord,
     AuditSink,
     InMemoryAuditLog,
@@ -77,6 +79,8 @@ __all__ = [
     "NullAuditSink",
     "read_jsonl",
     "REDACTED",
+    "AUDIT_SCHEMA_VERSION",
+    "SUPPORTED_AUDIT_SCHEMA_VERSIONS",
     # replay
     "replay",
     "replay_all",

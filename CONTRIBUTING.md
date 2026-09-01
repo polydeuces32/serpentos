@@ -33,6 +33,8 @@ Three architectural rules, each with a test that enforces it:
 2. **`core.py` must never import curses, and the UI must never contain game rules.** That split is what lets the same learning run in a terminal, in CI and in a container.
 3. **Policies must not perform side effects.** No writes, no network, no clock reads, no mutating the context. Replay and comparison are only meaningful because of this.
 
+A fourth rule that is not architectural but is just as binding: **the public API surface is pinned.** `tests/test_api_surface.py` enumerates every name `serpentos` and `serpentos.policies` export. Adding one means updating that list and recording its stability tier; removing or renaming one is a breaking change that needs a major version. See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
 See [docs/DECISION_ENGINE.md](docs/DECISION_ENGINE.md) for the full architecture.
 
 ---

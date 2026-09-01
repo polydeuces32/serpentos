@@ -26,6 +26,10 @@ newer and marked *experimental* below: they work and are tested, but their
 signatures may change in response to real use. Nothing here has been through a
 long production soak. Treat version numbers accordingly.
 
+What is public, what may change, and how serialized formats are versioned:
+**[COMPATIBILITY.md](COMPATIBILITY.md)**. The public surface is pinned by a
+test, so that document is enforced rather than aspirational.
+
 ---
 
 ## Why this exists
@@ -198,9 +202,9 @@ The lifecycle of `engine.decide(context)`:
 
 `clock` and `id_factory` are injectable so tests can be deterministic.
 
-The engine holds no mutable state, so one instance can serve a whole process.
-Whether it is safe across threads depends on the sink; the built-in sinks are
-not synchronised.
+The engine holds no mutable state, so one instance can serve a whole process,
+including across threads — see
+[the concurrency section](#can-i-share-one-engine-across-threads).
 
 **The engine never executes the action.** Nothing in SerpentOS does.
 
@@ -226,6 +230,14 @@ replacement appear in the audit log.
 `policy_version`, `action`, `context`, `decision_metadata`, `validation_result`
 and `request_id`. It is plain JSON with sorted keys, so equal records serialise
 byte-identically and can be diffed or hashed.
+
+Every persisted record also carries `schema_version`, currently `1`. A reader
+that meets a version it does not know raises `AuditError` naming the version
+rather than parsing the parts it recognises — silently misreading an audit log
+is worse than failing to read it. Records written before the field existed have
+exactly the version-1 shape and are read as version 1. Compatibility rules for
+this and the other on-disk formats are in
+**[COMPATIBILITY.md](COMPATIBILITY.md)**.
 
 Two sinks ship:
 
@@ -339,6 +351,45 @@ a differently-trained table is caught rather than silently tolerated. Set
 propagates into replay as `guaranteed=False`.
 
 It is one policy. The runtime has no opinion about learning.
+
+---
+
+## Can I share one engine across threads?
+
+**Yes, in the default configuration.** Concretely:
+
+| Component | Safe to share between threads? |
+|---|---|
+| `DecisionEngine` | Yes. It holds no mutable state of its own. |
+| `DecisionContext`, `Decision`, `Outcome` | Yes. Deeply immutable. |
+| `InMemoryAuditLog` | Yes. Lock-guarded; `records` returns a snapshot. |
+| `JsonlAuditLog` | Yes, within one process. See the caveat below. |
+| `NullAuditSink` | Yes. It does nothing. |
+| `ActionValidator` | Yes. Its allow-list is frozen at construction. |
+| `RulePolicy`, `WeightedPolicy` | Yes. Stateless once built. |
+| `QLearningPolicy` | Yes. Read-only access to the Q-table. |
+| **Your** policy, validator or sink | **Only if you made it so.** |
+
+That last row is the one that matters. A policy honouring the purity contract is
+stateless and therefore safe by construction, but a policy that memoises into a
+plain `dict`, or a custom sink appending to an unguarded list, is not — and the
+runtime cannot detect either. If you write one, you own its synchronisation.
+
+Two boundaries worth stating exactly:
+
+- **`JsonlAuditLog` is safe across threads, not across processes.** Within a
+  process a lock serialises the check-size-rotate-reopen-write sequence, which
+  is the part that actually races. Across processes, `O_APPEND` still keeps
+  individual lines intact, but rotation is uncoordinated: two processes rotating
+  the same path at the same moment can lose records. Give each process its own
+  file if that matters.
+- **Nothing here is async-aware.** The sinks do blocking I/O. Calling
+  `engine.decide()` from a coroutine will block the event loop for the duration
+  of the audit write; use a thread executor, or a sink of your own that queues.
+
+`compare()` and `replay_all()` are single-threaded and make no attempt to
+parallelise. They are pure given pure policies, so calling them concurrently on
+separate data is fine.
 
 ---
 
@@ -566,9 +617,8 @@ Known, and deliberate for this phase:
 
 - **Single-process, in-memory or file-backed.** No registry, no server, no
   distribution.
-- **The built-in sinks are not thread-safe.** Concurrent JSONL writers append
-  whole lines safely at the OS level, but a single sink object shared across
-  threads is not synchronised.
+- **Thread-safe, not process-safe, not async-aware.** See
+  [the concurrency section](#can-i-share-one-engine-across-threads).
 - **No schema for contexts.** The runtime checks that values are JSON; it does
   not check that `attempts` is present or that it is an integer. A policy that
   needs a field should say so when it is missing.

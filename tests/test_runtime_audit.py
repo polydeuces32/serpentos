@@ -10,7 +10,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from serpentos.runtime.audit import (
+    AUDIT_SCHEMA_VERSION,
     REDACTED,
+    SUPPORTED_AUDIT_SCHEMA_VERSIONS,
     AuditRecord,
     InMemoryAuditLog,
     JsonlAuditLog,
@@ -96,6 +98,79 @@ class AuditRecordTest(unittest.TestCase):
         payload["decision_metadata"] = {"expr": "__import__('os').system('true')"}
         record = AuditRecord.from_dict(payload)
         self.assertEqual(record.decision_metadata["expr"], "__import__('os').system('true')")
+
+
+class SchemaVersionTest(unittest.TestCase):
+    """The on-disk format says which format it is, and readers act on that."""
+
+    def test_every_persisted_record_declares_its_schema(self):
+        payload = sample_record().to_dict()
+        self.assertEqual(payload["schema_version"], AUDIT_SCHEMA_VERSION)
+        self.assertEqual(json.loads(sample_record().to_json())["schema_version"], 1)
+
+    def test_the_current_version_is_accepted(self):
+        record = sample_record()
+        payload = record.to_dict()
+        self.assertEqual(AuditRecord.from_dict(payload), record)
+
+    def test_a_record_written_before_the_field_existed_is_read_as_version_one(self):
+        # Legacy records have exactly the v1 shape, so reading them is correct
+        # rather than merely tolerated.
+        record = sample_record()
+        legacy = record.to_dict()
+        del legacy["schema_version"]
+        self.assertEqual(AuditRecord.from_dict(legacy), record)
+
+    def test_a_future_version_is_refused_rather_than_guessed_at(self):
+        payload = sample_record().to_dict()
+        payload["schema_version"] = AUDIT_SCHEMA_VERSION + 1
+        with self.assertRaises(AuditError) as caught:
+            AuditRecord.from_dict(payload)
+        message = str(caught.exception)
+        self.assertIn("newer SerpentOS", message)
+        self.assertIn(str(AUDIT_SCHEMA_VERSION + 1), message)
+
+    def test_a_far_future_version_is_also_refused(self):
+        payload = sample_record().to_dict()
+        payload["schema_version"] = 9999
+        with self.assertRaises(AuditError):
+            AuditRecord.from_dict(payload)
+
+    def test_a_nonsense_version_is_refused(self):
+        for version in ("1", 1.5, True, [1], {"v": 1}, 0, -3):
+            payload = sample_record().to_dict()
+            payload["schema_version"] = version
+            with self.assertRaises(AuditError):
+                AuditRecord.from_dict(payload)
+
+    def test_a_future_record_in_a_file_names_its_line(self):
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "audit.jsonl")
+        good = sample_record().to_json()
+        future = json.loads(good)
+        future["schema_version"] = 2
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(good + "\n")
+            handle.write(json.dumps(future) + "\n")
+
+        with self.assertRaises(AuditError) as caught:
+            list(read_jsonl(path))
+        self.assertIn(":2:", str(caught.exception))
+        # The reader can be told to press on past records it cannot understand.
+        self.assertEqual(len(list(read_jsonl(path, skip_invalid=True))), 1)
+
+    def test_the_supported_set_is_consistent_with_the_current_version(self):
+        self.assertIn(AUDIT_SCHEMA_VERSION, SUPPORTED_AUDIT_SCHEMA_VERSIONS)
+        self.assertEqual(max(SUPPORTED_AUDIT_SCHEMA_VERSIONS), AUDIT_SCHEMA_VERSION)
+
+    def test_round_tripping_through_a_file_preserves_the_version(self):
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "audit.jsonl")
+        sink = JsonlAuditLog(path)
+        sink.record(sample_record())
+        sink.close()
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(json.loads(handle.read())["schema_version"], 1)
 
 
 class RedactionTest(unittest.TestCase):

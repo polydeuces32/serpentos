@@ -307,9 +307,39 @@ class Outcome:
       :func:`~serpentos.runtime.comparison.compare` aggregates each one
       separately rather than collapsing them.
 
+    * ``metadata`` — everything that is not a number: an error class, a carrier
+      name, a currency code, a free-text reason. Never aggregated, always
+      preserved.
+
     Outcomes are reported by the application, not produced by the runtime.
     Nothing consumes them automatically; they exist so comparison can aggregate
     real results instead of guessing at them.
+
+    **Which field does this go in?** The question comes up constantly, so:
+
+    ==========================  ==========================================
+    You have                    Put it in
+    ==========================  ==========================================
+    Latency, cost, retries      ``metrics``, one key each
+    Several competing measures  ``metrics``, and leave ``score`` as ``None``
+    A genuine utility/reward    ``score``, *and* the components in ``metrics``
+    Profit or loss              ``score`` if it is the objective, else a metric
+    A currency, an error class  ``metadata``
+    A pass/fail verdict         ``success``
+    ==========================  ==========================================
+
+    Two rules of thumb. Put the unit in the metric name — ``cost_usd``,
+    ``latency_ms``, ``bytes_written`` — because nothing here tracks units and a
+    mean of mixed units is worse than no mean. And set ``score`` only when you
+    could defend the number to someone who disagreed with you; a weighted sum
+    invented to make a comparison table sortable is how the wrong policy wins.
+
+    .. warning::
+       ``metrics`` values are IEEE floats, because they exist to be averaged.
+       That makes them unsuitable as a system of record for money. Report
+       ``cost_usd`` here for comparison by all means, but keep the authoritative
+       amount in your own ledger — or pass integer minor units
+       (``cost_cents``) and a currency in ``metadata``.
 
     >>> Outcome(True, score=0.8, metrics={"latency_ms": 120})
     Outcome(success=True, score=0.8, ...)

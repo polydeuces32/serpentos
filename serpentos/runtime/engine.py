@@ -60,9 +60,17 @@ class DecisionEngine:
 
     :raises ConfigurationError: if any component does not satisfy its interface.
 
-    The engine holds no mutable state of its own, so a single instance can be
-    reused for the life of a process. Whether it is safe to share across threads
-    depends on the sink you attach; the built-in sinks are not synchronised.
+    **Concurrency.** The engine holds no mutable state of its own, so a single
+    instance can be reused for the life of a process and shared freely between
+    threads. Both built-in sinks (:class:`~serpentos.runtime.audit.InMemoryAuditLog`
+    and :class:`~serpentos.runtime.audit.JsonlAuditLog`) are internally
+    synchronised, so the default configuration is thread-safe.
+
+    That guarantee ends where your code begins. A shared engine is thread-safe
+    only if the policy, validator and sink you supply are: a policy that honours
+    the purity contract is stateless and therefore safe, but one that caches into
+    a plain ``dict``, or a custom sink that appends to an unguarded list, is not.
+    The runtime cannot check this for you.
     """
 
     def __init__(

@@ -31,7 +31,9 @@ and nothing here imports the game.
 from __future__ import annotations
 
 from .runtime import (
+    AUDIT_SCHEMA_VERSION,
     REDACTED,
+    SUPPORTED_AUDIT_SCHEMA_VERSIONS,
     ActionValidator,
     AuditError,
     AuditRecord,
@@ -94,6 +96,8 @@ __all__ = [
     "NullAuditSink",
     "read_jsonl",
     "REDACTED",
+    "AUDIT_SCHEMA_VERSION",
+    "SUPPORTED_AUDIT_SCHEMA_VERSIONS",
     # replay
     "replay",
     "replay_all",

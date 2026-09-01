@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
@@ -34,6 +35,8 @@ from .models import Decision, DecisionContext, to_canonical_json
 from .validation import ValidationResult
 
 __all__ = [
+    "AUDIT_SCHEMA_VERSION",
+    "SUPPORTED_AUDIT_SCHEMA_VERSIONS",
     "AuditRecord",
     "AuditSink",
     "InMemoryAuditLog",
@@ -42,6 +45,14 @@ __all__ = [
     "REDACTED",
     "read_jsonl",
 ]
+
+#: Schema version stamped onto every persisted record. Bumped only when the
+#: on-disk shape changes in a way an older reader would misinterpret.
+AUDIT_SCHEMA_VERSION = 1
+
+#: Versions this build can read. A record from the future is refused rather than
+#: guessed at: silently misreading an audit log is worse than failing to read it.
+SUPPORTED_AUDIT_SCHEMA_VERSIONS = frozenset({1})
 
 #: Placeholder substituted for redacted values.
 REDACTED = "[REDACTED]"
@@ -158,6 +169,7 @@ class AuditRecord:
         from .models import thaw_value
 
         return {
+            "schema_version": AUDIT_SCHEMA_VERSION,
             "decision_id": self.decision_id,
             "timestamp": self.timestamp,
             "policy_name": self.policy_name,
@@ -179,11 +191,13 @@ class AuditRecord:
     def from_dict(cls, payload: Mapping[str, Any]) -> "AuditRecord":
         """Rebuild from :meth:`to_dict` output.
 
-        :raises AuditError: if the payload is not a well-formed record. Parsing
-            never constructs arbitrary types — every field is checked.
+        :raises AuditError: if the payload is not a well-formed record, or was
+            written by a SerpentOS whose schema this build does not understand.
+            Parsing never constructs arbitrary types — every field is checked.
         """
         if not isinstance(payload, Mapping):
             raise AuditError(f"audit record must be a JSON object, got {type(payload).__name__}")
+        cls._check_schema_version(payload.get("schema_version"))
         required = ("decision_id", "timestamp", "policy_name", "policy_version", "action")
         for name in required:
             if not isinstance(payload.get(name), str) or not payload[name]:
@@ -221,6 +235,33 @@ class AuditRecord:
             decision_metadata=dict(metadata),
             validation_result=validation,
             request_id=request_id,
+        )
+
+    @staticmethod
+    def _check_schema_version(raw: Any) -> None:
+        """Refuse a record this build cannot read correctly.
+
+        A missing ``schema_version`` means version 1. Records written before the
+        field existed have exactly the version-1 shape, so reading them is
+        correct rather than merely tolerated — but every record written from now
+        on carries the field explicitly.
+        """
+        if raw is None:
+            return
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise AuditError(
+                f"audit record schema_version must be an integer, got {type(raw).__name__}"
+            )
+        if raw in SUPPORTED_AUDIT_SCHEMA_VERSIONS:
+            return
+        known = ", ".join(str(version) for version in sorted(SUPPORTED_AUDIT_SCHEMA_VERSIONS))
+        if raw > AUDIT_SCHEMA_VERSION:
+            raise AuditError(
+                f"audit record schema_version {raw} was written by a newer SerpentOS; "
+                f"this build reads {known}. Upgrade rather than risk misreading it."
+            )
+        raise AuditError(
+            f"audit record schema_version {raw} is not a version this build reads ({known})"
         )
 
     @classmethod
@@ -276,6 +317,10 @@ class InMemoryAuditLog(_RedactingSink):
     """Keeps records in a bounded list. Useful in tests and short-lived jobs.
 
     ``max_records`` caps memory use; the oldest records are dropped first.
+
+    **Thread-safe.** One instance may be shared by any number of application
+    threads: appends are serialised by a lock, and :attr:`records` returns a
+    snapshot rather than a live view, so iterating it cannot race with a writer.
     """
 
     def __init__(
@@ -290,24 +335,31 @@ class InMemoryAuditLog(_RedactingSink):
             raise ConfigurationError("max_records must be positive")
         self._max_records = max_records
         self._records: List[AuditRecord] = []
+        self._lock = threading.Lock()
 
     def record(self, record: AuditRecord) -> None:
         """Append ``record``, dropping the oldest if the cap is reached."""
-        self._records.append(self._prepare(record))
-        if len(self._records) > self._max_records:
-            del self._records[: len(self._records) - self._max_records]
+        # Redaction is pure, so it can happen outside the lock.
+        prepared = self._prepare(record)
+        with self._lock:
+            self._records.append(prepared)
+            if len(self._records) > self._max_records:
+                del self._records[: len(self._records) - self._max_records]
 
     @property
     def records(self) -> Sequence[AuditRecord]:
         """The records held, oldest first. A snapshot, safe to iterate."""
-        return tuple(self._records)
+        with self._lock:
+            return tuple(self._records)
 
     def clear(self) -> None:
         """Drop everything held."""
-        self._records.clear()
+        with self._lock:
+            self._records.clear()
 
     def __len__(self) -> int:
-        return len(self._records)
+        with self._lock:
+            return len(self._records)
 
 
 class JsonlAuditLog(_RedactingSink):
@@ -318,6 +370,15 @@ class JsonlAuditLog(_RedactingSink):
     corrupting each other. Durability is a separate question: pass
     ``fsync=True`` to flush to disk on every record, at a substantial cost in
     throughput.
+
+    **Thread-safe within one process.** A lock serialises the
+    check-size-then-rotate-then-write sequence, which is what actually races —
+    without it two threads can both decide to rotate and one loses its file
+    descriptor mid-write.
+
+    *Across* processes, `O_APPEND` keeps individual lines intact, but rotation
+    is not coordinated: two processes rotating the same path at the same moment
+    can lose records. Give each process its own file if that matters.
 
     ``path`` is trusted caller configuration. Never build it from context data —
     that is how a policy input turns into a path traversal.
@@ -341,6 +402,7 @@ class JsonlAuditLog(_RedactingSink):
         self.max_bytes = max_bytes
         self._fsync = bool(fsync)
         self._fd: Optional[int] = None
+        self._lock = threading.Lock()
 
     # -- lifecycle ---------------------------------------------------
     def _open(self) -> int:
@@ -355,15 +417,20 @@ class JsonlAuditLog(_RedactingSink):
                 raise AuditError(f"cannot open audit log {self.path}: {exc}") from exc
         return self._fd
 
-    def close(self) -> None:
-        """Close the underlying file. Further writes reopen it."""
+    def _close_locked(self) -> None:
         if self._fd is not None:
             with contextlib.suppress(OSError):
                 os.close(self._fd)
             self._fd = None
 
+    def close(self) -> None:
+        """Close the underlying file. Further writes reopen it."""
+        with self._lock:
+            self._close_locked()
+
     def __enter__(self) -> "JsonlAuditLog":
-        self._open()
+        with self._lock:
+            self._open()
         return self
 
     def __exit__(self, *exc_info) -> None:
@@ -379,7 +446,7 @@ class JsonlAuditLog(_RedactingSink):
             return
         if size < self.max_bytes:
             return
-        self.close()
+        self._close_locked()
         with contextlib.suppress(OSError):
             os.replace(self.path, self.path + ".1")
 
@@ -388,24 +455,26 @@ class JsonlAuditLog(_RedactingSink):
 
         :raises AuditError: if the record cannot be serialised or written.
         """
+        # Redaction and serialisation are pure; only the file needs the lock.
         prepared = self._prepare(record)
         try:
             line = (prepared.to_json() + "\n").encode("utf-8")
         except (TypeError, ValueError) as exc:
             raise AuditError(f"cannot serialise audit record: {exc}") from exc
 
-        self._rotate_if_needed()
-        fd = self._open()
-        try:
-            written = os.write(fd, line)
-            if written != len(line):  # pragma: no cover - short writes are rare
-                raise AuditError(
-                    f"short write to {self.path}: {written} of {len(line)} bytes"
-                )
-            if self._fsync:
-                os.fsync(fd)
-        except OSError as exc:
-            raise AuditError(f"cannot write to audit log {self.path}: {exc}") from exc
+        with self._lock:
+            self._rotate_if_needed()
+            fd = self._open()
+            try:
+                written = os.write(fd, line)
+                if written != len(line):  # pragma: no cover - short writes are rare
+                    raise AuditError(
+                        f"short write to {self.path}: {written} of {len(line)} bytes"
+                    )
+                if self._fsync:
+                    os.fsync(fd)
+            except OSError as exc:
+                raise AuditError(f"cannot write to audit log {self.path}: {exc}") from exc
 
 
 def read_jsonl(path: str, *, skip_invalid: bool = False) -> Iterator[AuditRecord]:

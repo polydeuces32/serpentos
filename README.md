@@ -89,7 +89,9 @@ Six failed requests, decided, audited, replayed against a tightened retry budget
 
 **How Snake relates to all this.** It is the reference environment, not the centre. `serpentos.environments.snake` shows the full integration: turning game state into a context, executing the action the engine returns, reporting the outcome. The most useful thing in it is `survival_policy()` — eight hand-written rules that play the game through the same engine as the trained agent, and average **36.9** food per episode against **0.05** for an untrained Q-table. Nothing about the runtime is shaped around machine learning.
 
-Full architecture, guarantees, security model and limitations: **[docs/DECISION_ENGINE.md](docs/DECISION_ENGINE.md)**.
+A shared `DecisionEngine` is safe to use from multiple threads, and so are both built-in audit sinks. Your own policy or sink is safe only if you made it so — the table in [docs/DECISION_ENGINE.md](docs/DECISION_ENGINE.md#can-i-share-one-engine-across-threads) is explicit about where the boundary falls.
+
+Full architecture, guarantees, security model and limitations: **[docs/DECISION_ENGINE.md](docs/DECISION_ENGINE.md)**. What counts as public API and what may change: **[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)**.
 
 ---
 
@@ -354,7 +356,7 @@ Checkpoints are written atomically, so killing the process mid-save cannot corru
 python -m unittest discover -s tests -v
 ```
 
-440 tests, standard library only, no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
+493 tests, standard library only, no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
