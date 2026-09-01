@@ -27,12 +27,14 @@ What it walks through, in order:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
 
-# Allow running straight from a clone, without installing first.
-if __package__ in (None, ""):
+# Prefer an installed SerpentOS; fall back to the clone this file sits in, so
+# the example runs before `pip install` as well as after it.
+if importlib.util.find_spec("serpentos") is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from serpentos import (  # noqa: E402

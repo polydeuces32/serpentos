@@ -158,12 +158,30 @@ class IsolationTest(unittest.TestCase):
 
     def test_no_module_in_the_runtime_uses_eval_exec_or_pickle(self):
         banned = ("eval(", "exec(", "import pickle", "__import__(", "marshal", "shelve")
-        for path in sorted((REPO / "serpentos" / "runtime").glob("*.py")) + sorted(
-            (REPO / "serpentos" / "policies").glob("*.py")
-        ):
+        scanned = 0
+        for path in self.decision_sources():
+            source = path.read_text(encoding="utf-8")
+            scanned += 1
+            for token in banned:
+                self.assertNotIn(token, source, f"{path} contains {token!r}")
+        self.assertGreater(scanned, 10, "the scan stopped finding source files")
+
+    def test_nothing_on_the_decision_path_opens_a_socket_or_a_shell(self):
+        banned = ("subprocess", "import socket", "urllib", "http.client", "os.system")
+        for path in self.decision_sources():
             source = path.read_text(encoding="utf-8")
             for token in banned:
-                self.assertNotIn(token, source, f"{path.name} contains {token!r}")
+                self.assertNotIn(token, source, f"{path} contains {token!r}")
+
+    @staticmethod
+    def decision_sources():
+        """Every file involved in making a decision, examples included."""
+        return (
+            sorted((REPO / "serpentos" / "runtime").glob("*.py"))
+            + sorted((REPO / "serpentos" / "policies").glob("*.py"))
+            + sorted((REPO / "serpentos" / "environments").rglob("*.py"))
+            + sorted((REPO / "examples").glob("*.py"))
+        )
 
 
 if __name__ == "__main__":

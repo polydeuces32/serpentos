@@ -71,6 +71,10 @@ jobs:
           assert not leaked, leaked
           print('runtime is isolated')
           "
+      - name: The non-Snake example runs against the installed package
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: python "$GITHUB_WORKSPACE/examples/retry_policy.py"
 
   benchmark:
     name: benchmark is reproducible
@@ -112,7 +116,10 @@ jobs:
       - name: Installed console script works
         run: |
           serpentos --help
+          serpentos run --help
           serpentos bot --help
+          serpentos bench --help
+          serpentos help
           serpentos bot --episodes 20 --data-dir "$RUNNER_TEMP/state" --quiet --json
       - name: Every subpackage ships in the wheel
         working-directory: ${{ runner.temp }}

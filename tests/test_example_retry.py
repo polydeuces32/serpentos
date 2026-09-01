@@ -52,7 +52,9 @@ class ExampleRunsTest(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module)
         roots = {name.split(".")[0] for name in imported}
-        self.assertEqual(roots - {"serpentos"}, {"__future__", "json", "os", "sys"})
+        self.assertEqual(
+            roots - {"serpentos"}, {"__future__", "importlib", "json", "os", "sys"}
+        )
         for forbidden in ("serpentos.core", "serpentos.bot", "serpentos.environments"):
             self.assertNotIn(forbidden, imported)
 
