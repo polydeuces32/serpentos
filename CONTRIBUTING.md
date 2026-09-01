@@ -24,6 +24,7 @@ Python 3.9 or newer. Nothing to install.
 | `serpentos/serpentos.py` | The terminal UI. Drawing only — no rules. |
 | `serpentos/theme.py` | Colour palettes and the 256/8/monochrome fallback. |
 | `serpentos/__main__.py` | Command dispatch for `run`, `bot` and `bench`. |
+| `examples/` | Standalone scripts using the runtime for something other than Snake. |
 | `tests/` | Standard library `unittest`. |
 
 Three architectural rules, each with a test that enforces it:
@@ -32,7 +33,7 @@ Three architectural rules, each with a test that enforces it:
 2. **`core.py` must never import curses, and the UI must never contain game rules.** That split is what lets the same learning run in a terminal, in CI and in a container.
 3. **Policies must not perform side effects.** No writes, no network, no clock reads, no mutating the context. Replay and comparison are only meaningful because of this.
 
-See [docs/RUNTIME.md](docs/RUNTIME.md) for the full architecture.
+See [docs/DECISION_ENGINE.md](docs/DECISION_ENGINE.md) for the full architecture.
 
 ---
 

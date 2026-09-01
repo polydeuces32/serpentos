@@ -32,7 +32,7 @@ examples:
 
 Every command takes --help. State lives in ~/.serpentos (override --data-dir).
 
-The policy runtime has no CLI: it is a library. See docs/RUNTIME.md, or
+The policy runtime has no CLI: it is a library. See docs/DECISION_ENGINE.md, or
   python -c "import serpentos; help(serpentos)"
 """
 

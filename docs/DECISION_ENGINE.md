@@ -1,11 +1,30 @@
-# The SerpentOS policy runtime
+# SerpentOS as a decision engine
 
-A small kernel for decision logic. It has no dependencies beyond the Python
-standard library, makes no network calls, starts no services and knows nothing
-about Snake, Q-learning or machine learning.
+A small kernel for decision logic: define a policy, run it under guardrails,
+record what it decided, and prove later that it still decides the same way. It
+has no dependencies beyond the Python standard library, makes no network calls,
+starts no services and knows nothing about Snake, Q-learning or machine
+learning.
 
-This document covers the architecture, the interfaces, what is and is not
-guaranteed, the security model, and the things it deliberately does not do.
+**What SerpentOS is now.** The repository began as a Snake game with a
+Q-learning agent, and that still works exactly as it did — see the
+[README](../README.md). But the interesting part turned out to be the shape
+underneath it: something observes a situation, something chooses an action, and
+something else has to live with the result. That shape is not about Snake, so it
+has been extracted into a library you can use for retry strategies, queue
+prioritisation or routing. Q-learning is now one policy implementation among
+several, reached through the same interface as everything else. Snake is the
+reference environment that proves the interface is honest.
+
+This document covers the architecture, the interfaces, the built-in policies,
+what is and is not guaranteed, the security model, and the things it
+deliberately does not do.
+
+**Maturity.** The core — context, policy, decision, validation, audit — is
+settled and heavily tested. Replay, comparison and the Q-learning adapter are
+newer and marked *experimental* below: they work and are tested, but their
+signatures may change in response to real use. Nothing here has been through a
+long production soak. Treat version numbers accordingly.
 
 ---
 
@@ -138,13 +157,23 @@ what the scores were. It is data. Nothing ever executes it.
 ### Outcome
 
 ```python
-Outcome(success: bool, metrics: Mapping[str, float],
+Outcome(success: bool, score: Optional[float] = None,
+        metrics: Mapping[str, float] = {},
         metadata: Mapping[str, Any] = {}, decision_id: Optional[str] = None)
 ```
 
-What happened after your application executed a decision. `success` means
-whatever you say it means; the runtime never infers it. Outcomes are reported by
-you, not produced by the runtime. In Phase 1 nothing consumes them
+What happened after your application executed a decision, in three registers:
+
+- `success` — did it work? Means whatever you say it means; the runtime never
+  infers it.
+- `score` — one number, when one honestly exists: a reward signal, a utility, a
+  realised profit. **Optional on purpose.** Most real decisions have no truthful
+  scalar summary, and forcing one is how you end up optimising the wrong thing.
+- `metrics` — named numbers: latency, cost, retries. Usually the honest
+  representation. `compare()` aggregates each separately rather than collapsing
+  them into a total.
+
+Outcomes are reported by you, not produced by the runtime. Nothing consumes them
 automatically — they exist so `compare()` can aggregate real results instead of
 guessing.
 
@@ -213,6 +242,103 @@ your context is safe to keep — applications routinely put tokens and personal
 data in the values a policy reads. Pass `redact=["authorization", "ssn"]` to mask
 values by key name at any depth, in both the context and the decision metadata,
 or `include_context=False` to drop the context entirely.
+
+---
+
+## The built-in policies
+
+Three ship in the box. None of them is privileged: the engine cannot tell them
+apart, and neither can `replay()` or `compare()`.
+
+### RulePolicy — ordered, declarative logic
+
+The one to reach for first. An ordered list of rules; the first whose condition
+matches wins, and a `default_action` catches everything else. Reading the rules
+top to bottom *is* reading the logic.
+
+```python
+from serpentos.policies import Rule, RulePolicy, AllOf, when
+
+policy = RulePolicy(
+    name="retry-rules",
+    version="1.0",
+    rules=[
+        Rule("fail", when("attempt", "ge", 3), name="attempts-exhausted"),
+        Rule("wait", when("status_code", "eq", 429), name="rate-limited"),
+        Rule("retry", when("status_code", "ge", 500), name="transient"),
+    ],
+    default_action="fail",
+)
+```
+
+The decision's metadata names the rule that fired, so an audit record says
+*why*, not just *what*. Conditions compose with `AllOf`, `AnyOf` and `Not`, and
+the whole rule set round-trips through `to_dict()` / `from_dict()` as plain JSON
+— which is the point. A rule set is **data**, so a config file cannot smuggle in
+executable code. See [the security model](#security-model).
+
+`Predicate` wraps an arbitrary Python callable for logic the closed operator set
+cannot express. It is deliberately not serialisable; that is the trade.
+
+### WeightedPolicy — quantitative scoring
+
+When the answer is a trade-off rather than a branch. Each candidate action gets
+a score, highest wins, ties break by declaration order.
+
+```python
+from serpentos.policies import WeightedPolicy
+
+carrier = WeightedPolicy.from_linear("carrier-choice", "1.0", {
+    name: {
+        "weights": {"cost_usd": -1.0, "days": -4.0, "reliability": 30.0},
+        "source": name,
+    }
+    for name in ("ups", "fedex", "usps")
+})
+```
+
+`source` tells a scorer to read its factors from that key's nested object, so
+each candidate is scored on its own attributes:
+
+```python
+decision = carrier.decide(DecisionContext({
+    "ups":   {"cost_usd": 12.50, "days": 2, "reliability": 0.97},
+    "fedex": {"cost_usd": 18.00, "days": 1, "reliability": 0.99},
+    "usps":  {"cost_usd":  8.25, "days": 4, "reliability": 0.91},
+}))
+# decision.action == "ups"
+# decision.metadata["scores"]  == {"ups": 8.6, "fedex": 7.7, "usps": 3.05}
+# decision.metadata["factors"]["ups"]
+#     == {"cost_usd": -12.5, "days": -8.0, "reliability": 29.1}
+```
+
+The `factors` breakdown is the part worth caring about. "UPS scored 8.6" is not
+an explanation; "cheapest-but-one, penalised two days in transit, carried by
+reliability" is. Contributions are derived *from* the breakdown rather than
+computed alongside it, so the explanation and the score cannot drift apart.
+
+**This is not machine learning.** Nothing is fitted and nothing learns. The
+weights are numbers a human chose and can defend in review, which for most
+routing problems is a feature rather than a limitation.
+
+### QLearningPolicy — the learned agent, as one option *(experimental)*
+
+The Snake agent, wrapped to fit the same interface.
+
+```python
+from serpentos.policies import QLearningPolicy
+
+policy = QLearningPolicy.from_policy_file("policy.json")
+```
+
+Strictly read-only: it looks up states with `QAgent.peek`, so serving decisions
+never grows the Q-table, never changes its fingerprint and never perturbs the
+benchmark. The version defaults to the table's fingerprint, so replaying against
+a differently-trained table is caught rather than silently tolerated. Set
+`explore=True` and the policy correctly declares itself non-deterministic, which
+propagates into replay as `guaranteed=False`.
+
+It is one policy. The runtime has no opinion about learning.
 
 ---
 
@@ -315,23 +441,89 @@ than no decision.
 
 ## Comparison
 
+*Experimental: the reports are useful and tested, but their shape may change.*
+
 ```python
-compare(policies, cases, *, validator=None, outcome_fn=None, max_error_samples=5)
+compare(policies, cases, *, validator=None, outcome_fn=None,
+        max_error_samples=5, max_disagreement_samples=5)
 ```
 
 Runs every policy over every context and reports, per policy: decision count,
 action distribution, error count with sampled messages, and validation failures.
-If you pass an `outcome_fn`, it also aggregates success rate and each metric's
-count, total, mean, min and max.
+If you pass an `outcome_fn`, it also aggregates success rate, the optional
+score, and each metric's count, total, mean, min and max.
 
 A policy that raises is isolated — the exception is counted against that policy
 and the run continues, because finding out which policies are broken is the
 point.
 
+### Disagreement is the measurement that matters
+
+Action distributions are easy to over-read. Consider two retry policies, each of
+which retries exactly half the time:
+
+| Policy | retry | fail |
+|--------|-------|------|
+| A      | 50    | 50   |
+| B      | 50    | 50   |
+
+Identical. Interchangeable, surely. Except they might not agree on a single
+request between them — A retrying precisely the ones B gives up on. The
+distributions cannot show you that, so `compare()` measures it directly:
+
+```python
+report = compare([policy_a, policy_b], cases)
+summary = report.disagreements
+
+summary.compared        # cases where every policy managed to decide
+summary.agreed          # ... and chose the same action
+summary.disagreed
+summary.agreement_rate
+summary.pairs           # per pair: compared, disagreed, rate
+summary.examples        # worked examples, capped; counts are always complete
+```
+
+Pairwise counts matter once you have three or more candidates, where "they
+mostly agree" can hide one outlier disagreeing with everyone. A case that any
+policy errored on is excluded from the overall tally — a crash is not an
+opinion — though pairs that both decided it still count it.
+
+`disagreements` is `None` when you compare a single policy, which has nobody to
+disagree with.
+
 **There is no overall score and there will not be one.** A policy that retries
 twice as often may be better or catastrophically worse depending on what a retry
 costs you, and the runtime does not know. `outcome_fn` is where you encode what
 success means.
+
+---
+
+## A worked example, with no Snake in it
+
+[`examples/retry_policy.py`](../examples/retry_policy.py) is the shortest honest
+demonstration that this is a decision engine rather than a game. A service call
+failed; something has to choose between retrying, waiting and giving up.
+
+```bash
+python examples/retry_policy.py
+```
+
+No network, no server, no database, no model, no API key. It runs in about a
+tenth of a second and walks through the whole lifecycle:
+
+1. **Deciding.** A rule policy proposes an action for six situations, behind an
+   allow-list. Each one prints its decision id and the rule that fired.
+2. **Auditing.** The full JSON record for one decision.
+3. **Replaying.** The recorded decisions re-run against the unchanged policy
+   (6/6 match, guaranteed), and then against a policy with the retry budget
+   tightened from three attempts to two — which reports exactly the two
+   decisions that would have changed, before you ship it.
+4. **Comparing.** The rules against a weighted-scoring model over the same six
+   situations, including where they disagree.
+
+That third step is the one worth stealing. "Would this edit have altered any of
+yesterday's decisions?" is normally answered by deploying and watching. Here it
+is answered offline, exactly, in milliseconds.
 
 ---
 
@@ -414,6 +606,7 @@ from serpentos import (
     replay, replay_all, ReplayResult, ReplayReport,
     # comparison
     compare, ComparisonReport, PolicyReport, OutcomeSummary, MetricSummary,
+    DisagreementSummary, Disagreement, PairDisagreement,
     # errors
     SerpentOSError, ConfigurationError, PolicyError,
     DecisionValidationError, ReplayError, AuditError,

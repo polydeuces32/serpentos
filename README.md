@@ -4,7 +4,7 @@
 
 Two things live in this repository, and it is worth knowing which one you came for.
 
-**[The runtime](#using-serpentos-as-a-library)** is a small standard-library kernel for decision logic: define a policy, run it under guardrails, record what it decided, and prove later that it still decides the same way. No dependencies, no services, no machine learning required.
+**[The runtime](#using-serpentos-as-a-decision-engine)** is a small standard-library kernel for decision logic: define a policy, run it under guardrails, record what it decided, and prove later that it still decides the same way. No dependencies, no services, no machine learning required.
 
 **The game** is the reference environment — a complete, honest example of an application with state, actions, a learned policy, persistence and a reproducible benchmark. Play it, train it, or read it as a worked example.
 
@@ -12,7 +12,7 @@ Two things live in this repository, and it is worth knowing which one you came f
 
 ## Who this is for
 
-**Engineers with decision logic scattered through their codebase.** Retry strategies, queue prioritisation, routing rules, feature rollout — the ones that are three nested `if` statements today, untested, unlogged and impossible to change safely. The runtime gives them a shape: a policy that proposes, a validator that gates, an audit record that explains, and replay that tells you whether your change would have altered anything. See **[docs/RUNTIME.md](docs/RUNTIME.md)**.
+**Engineers with decision logic scattered through their codebase.** Retry strategies, queue prioritisation, routing rules, feature rollout — the ones that are three nested `if` statements today, untested, unlogged and impossible to change safely. The runtime gives them a shape: a policy that proposes, a validator that gates, an audit record that explains, and replay that tells you whether your change would have altered anything. See **[docs/DECISION_ENGINE.md](docs/DECISION_ENGINE.md)**.
 
 **Anyone learning reinforcement learning by watching it happen.** The AI HUD shows the agent's actual state, its three Q-values and the reward for every step, so "exploration versus exploitation" stops being a phrase and becomes something on screen. There is no PyTorch, no GPU, no CUDA and no account — clone it and it runs.
 
@@ -26,7 +26,7 @@ It is **not** a serious RL research tool. Tabular Q-learning over eight state fe
 
 ---
 
-## Using SerpentOS as a library
+## Using SerpentOS as a Decision Engine
 
 Install it, import it, decide something:
 
@@ -75,17 +75,27 @@ report = replay_all(revised_policy, audit.records, strict=False)
 print(report.matched, report.mismatched)
 ```
 
-Three policy implementations ship with it. `RulePolicy` is ordered conditions over a closed set of operators, so a rule set loaded from a JSON file is data and cannot execute. `WeightedPolicy` scores every candidate action and takes the highest, from callbacks or from pure linear weights. `QLearningPolicy` is a read-only adapter over the snake agent — proof that a learned policy and a hand-written one can sit behind the same interface.
+**Comparison** answers the other question: how do two candidate policies actually differ? Not just their action distributions — two retry policies can each retry exactly half the time and never once agree on *which* half — so `compare()` reports disagreement directly, overall and pairwise, with worked examples of the cases where they parted company. It declares no winner. Whether retrying more is better depends on what a retry costs you, and only you know that.
+
+Three policy implementations ship with it. `RulePolicy` is ordered conditions over a closed set of operators, so a rule set loaded from a JSON file is data and cannot execute. `WeightedPolicy` scores every candidate action and takes the highest, and explains each score factor by factor — not "UPS scored 8.6" but "−12.50 on cost, −8.00 for two days in transit, +29.10 on reliability". `QLearningPolicy` is a read-only adapter over the snake agent — proof that a learned policy and a hand-written one can sit behind the same interface.
+
+**Try it without cloning your imagination first:**
+
+```bash
+python examples/retry_policy.py
+```
+
+Six failed requests, decided, audited, replayed against a tightened retry budget to show exactly which two decisions would change, then compared against a scoring model. No network, no game, about a tenth of a second.
 
 **How Snake relates to all this.** It is the reference environment, not the centre. `serpentos.environments.snake` shows the full integration: turning game state into a context, executing the action the engine returns, reporting the outcome. The most useful thing in it is `survival_policy()` — eight hand-written rules that play the game through the same engine as the trained agent, and average **36.9** food per episode against **0.05** for an untrained Q-table. Nothing about the runtime is shaped around machine learning.
 
-Full architecture, guarantees, security model and limitations: **[docs/RUNTIME.md](docs/RUNTIME.md)**.
+Full architecture, guarantees, security model and limitations: **[docs/DECISION_ENGINE.md](docs/DECISION_ENGINE.md)**.
 
 ---
 
 ## Features
 
-- **Policy runtime** — context → policy → decision → outcome, with validation, audit, replay and comparison
+- **Policy runtime** — context → policy → decision → outcome, with validation, audit, replay, and comparison that reports where policies disagree
 - **Three policy types** — ordered rules, weighted scoring, and the Q-learning adapter, all behind one interface
 - **Human mode** — classic snake with arrow keys or WASD
 - **AI mode** — tabular Q-learning agent with a live thinking HUD
@@ -344,7 +354,7 @@ Checkpoints are written atomically, so killing the process mid-save cannot corru
 python -m unittest discover -s tests -v
 ```
 
-389 tests, standard library only, no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
+440 tests, standard library only, no third-party dependencies. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
