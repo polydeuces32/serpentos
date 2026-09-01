@@ -75,6 +75,49 @@ jobs:
         shell: bash
         working-directory: ${{ runner.temp }}
         run: python "$GITHUB_WORKSPACE/examples/retry_policy.py"
+      - name: The published contract holds for the installed wheel
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -c "
+          import json, os, sys, tempfile, threading
+          import serpentos
+          assert 'workspace' not in serpentos.__file__.lower() or 'site-packages' in serpentos.__file__
+          from serpentos import (ActionValidator, AUDIT_SCHEMA_VERSION, DecisionContext,
+                                 DecisionEngine, InMemoryAuditLog, JsonlAuditLog, Outcome,
+                                 compare, read_jsonl, replay_all)
+          from serpentos.policies import Rule, RulePolicy, when
+
+          policy = RulePolicy(name='gate', version='1.0',
+                              rules=[Rule('allow', when('score', 'ge', 50))],
+                              default_action='deny')
+          cases = [DecisionContext({'score': s, 'ssn': 'x'}) for s in (10, 80)]
+
+          # Audit records carry a schema version, and unknown ones are refused.
+          path = os.path.join(tempfile.mkdtemp(), 'a.jsonl')
+          sink = JsonlAuditLog(path, redact=['ssn'])
+          engine = DecisionEngine(policy, validator=ActionValidator({'allow','deny'}), audit_sink=sink)
+          for case in cases: engine.decide(case)
+          sink.close()
+          rows = [json.loads(l) for l in open(path) if l.strip()]
+          assert all(r['schema_version'] == AUDIT_SCHEMA_VERSION for r in rows), rows
+          assert rows[0]['context']['values']['ssn'] == '[REDACTED]'
+          assert replay_all(policy, list(read_jsonl(path))).matched == 2
+
+          # Outcome carries metrics without demanding a scalar score.
+          assert Outcome(True, metrics={'latency_ms': 3.0}).score is None
+
+          # A shared engine is safe across threads.
+          shared = InMemoryAuditLog()
+          hot = DecisionEngine(policy, validator=ActionValidator({'allow','deny'}), audit_sink=shared)
+          def work():
+              for i in range(100): hot.decide(DecisionContext({'score': i}))
+          ts = [threading.Thread(target=work) for _ in range(8)]
+          [t.start() for t in ts]; [t.join() for t in ts]
+          assert len(shared) == 800, len(shared)
+
+          print('contract ok:', len(serpentos.__all__), 'public names, schema', AUDIT_SCHEMA_VERSION)
+          "
 
   benchmark:
     name: benchmark is reproducible
