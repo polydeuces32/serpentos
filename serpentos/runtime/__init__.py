@@ -32,8 +32,11 @@ from .audit import (
 )
 from .comparison import (
     ComparisonReport,
+    Disagreement,
+    DisagreementSummary,
     MetricSummary,
     OutcomeSummary,
+    PairDisagreement,
     PolicyReport,
     compare,
 )
@@ -85,6 +88,9 @@ __all__ = [
     "PolicyReport",
     "OutcomeSummary",
     "MetricSummary",
+    "DisagreementSummary",
+    "Disagreement",
+    "PairDisagreement",
     # errors
     "SerpentOSError",
     "ConfigurationError",

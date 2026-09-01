@@ -35,15 +35,31 @@ Scorer = Callable[[Mapping[str, Any]], float]
 
 
 class LinearScorer:
-    """``bias + sum(weight * values[key])`` over a fixed set of keys.
+    """``bias + sum(weight * value)`` over a fixed set of keys.
 
     Pure data, so a whole scoring model round-trips through JSON without any
     code being loaded. Missing keys contribute nothing; non-numeric values are a
     hard error rather than a silent zero, because quietly scoring a string as 0
     is how a routing bug hides for six months.
+
+    ``source`` names a nested object to read the factors from, which is what you
+    want when each candidate carries its own attributes:
+
+    >>> quote = {"ups": {"cost": 12.5, "days": 2}, "fedex": {"cost": 18.0, "days": 1}}
+    >>> scorer = LinearScorer({"cost": -1.0, "days": -3.0}, source="ups")
+    >>> scorer(quote)
+    -18.5
+    >>> scorer.explain(quote)["days"]
+    -6.0
     """
 
-    def __init__(self, weights: Mapping[str, float], bias: float = 0.0) -> None:
+    def __init__(
+        self,
+        weights: Mapping[str, float],
+        bias: float = 0.0,
+        *,
+        source: Optional[str] = None,
+    ) -> None:
         if not isinstance(weights, Mapping):
             raise ConfigurationError(
                 f"weights must be a mapping, got {type(weights).__name__}"
@@ -61,17 +77,40 @@ class LinearScorer:
             cleaned[key] = float(weight)
         if isinstance(bias, bool) or not isinstance(bias, (int, float)) or not math.isfinite(bias):
             raise ConfigurationError("bias must be a finite number")
+        if source is not None and (not isinstance(source, str) or not source):
+            raise ConfigurationError("source must be a non-empty string or None")
         self.weights: Mapping[str, float] = dict(cleaned)
         self.bias = float(bias)
+        self.source = source
 
-    def __call__(self, values: Mapping[str, Any]) -> float:
-        """Score ``values``.
+    def _factors(self, values: Mapping[str, Any]) -> Mapping[str, Any]:
+        if self.source is None:
+            return values
+        nested = values.get(self.source)
+        if nested is None:
+            return {}
+        if not isinstance(nested, Mapping):
+            raise PolicyError(
+                f"cannot score {self.source!r}: expected an object of factors, "
+                f"got {type(nested).__name__}"
+            )
+        return nested
+
+    def explain(self, values: Mapping[str, Any]) -> Dict[str, float]:
+        """Each factor's contribution to the score, including the bias.
+
+        The contributions always sum to :meth:`__call__`'s result — the
+        explanation is where the score comes from, not a second calculation that
+        might drift away from it.
 
         :raises PolicyError: if a weighted key holds a non-numeric value.
         """
-        total = self.bias
+        factors = self._factors(values)
+        contributions: Dict[str, float] = {}
+        if self.bias:
+            contributions["bias"] = self.bias
         for key, weight in self.weights.items():
-            raw = values.get(key)
+            raw = factors.get(key)
             if raw is None:
                 continue
             if isinstance(raw, bool):
@@ -80,15 +119,33 @@ class LinearScorer:
                 raise PolicyError(
                     f"cannot score {key!r}: expected a number, got {type(raw).__name__}"
                 )
-            total += weight * float(raw)
-        return total
+            contributions[key] = weight * float(raw)
+        return contributions
+
+    def __call__(self, values: Mapping[str, Any]) -> float:
+        """Score ``values``.
+
+        :raises PolicyError: if a weighted key holds a non-numeric value.
+        """
+        return self.bias + sum(
+            value for key, value in self.explain(values).items() if key != "bias"
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """A JSON-serialisable form of this scorer."""
-        return {"bias": self.bias, "weights": dict(sorted(self.weights.items()))}
+        payload: Dict[str, Any] = {
+            "bias": self.bias,
+            "weights": dict(sorted(self.weights.items())),
+        }
+        if self.source is not None:
+            payload["source"] = self.source
+        return payload
 
     def __repr__(self) -> str:
-        return f"LinearScorer(weights={self.weights!r}, bias={self.bias!r})"
+        return (
+            f"LinearScorer(weights={self.weights!r}, bias={self.bias!r}, "
+            f"source={self.source!r})"
+        )
 
 
 class WeightedPolicy(BasePolicy):
@@ -182,13 +239,62 @@ class WeightedPolicy(BasePolicy):
                 raise ConfigurationError(
                     f"weight spec for {action!r} must be a mapping, got {type(spec).__name__}"
                 )
-            scorers[action] = LinearScorer(spec.get("weights", {}), spec.get("bias", 0.0))
+            scorers[action] = LinearScorer(
+                spec.get("weights", {}),
+                spec.get("bias", 0.0),
+                source=spec.get("source"),
+            )
         return cls(
             name,
             version,
             scorers,
             minimum_score=minimum_score,
             default_action=default_action,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise back to the form :meth:`from_linear` accepts.
+
+        :raises ConfigurationError: if any scorer is a plain callable. Arbitrary
+            Python cannot be written to disk as data, and pretending otherwise
+            would mean either dropping logic silently or serialising code.
+        """
+        scorers: Dict[str, Any] = {}
+        for action, scorer in self._scorers.items():
+            serialise = getattr(scorer, "to_dict", None)
+            if not callable(serialise):
+                raise ConfigurationError(
+                    f"scorer for {action!r} is a plain callable and cannot be "
+                    "serialised; use LinearScorer for configuration you intend to store"
+                )
+            scorers[action] = serialise()
+        return {
+            "name": self.name,
+            "version": self.version,
+            "scorers": scorers,
+            "minimum_score": self.minimum_score,
+            "default_action": self.default_action,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "WeightedPolicy":
+        """Rebuild a policy from :meth:`to_dict` output.
+
+        :raises ConfigurationError: if the payload is malformed.
+        """
+        if not isinstance(payload, Mapping):
+            raise ConfigurationError(
+                f"policy payload must be a mapping, got {type(payload).__name__}"
+            )
+        for required in ("name", "version", "scorers"):
+            if required not in payload:
+                raise ConfigurationError(f"policy payload is missing {required!r}")
+        return cls.from_linear(
+            payload["name"],
+            payload["version"],
+            payload["scorers"],
+            minimum_score=payload.get("minimum_score"),
+            default_action=payload.get("default_action"),
         )
 
     @property
@@ -207,9 +313,27 @@ class WeightedPolicy(BasePolicy):
         """
         values = context.values
         scores: Dict[str, float] = {}
+        factors: Dict[str, Dict[str, float]] = {}
         for action, scorer in self._scorers.items():
+            explain = getattr(scorer, "explain", None)
             try:
-                raw = scorer(values)
+                if callable(explain):
+                    # Derive the score from the explanation so the two cannot
+                    # disagree. An explanation that does not add up to the score
+                    # is worse than no explanation at all.
+                    breakdown = explain(values)
+                    if not isinstance(breakdown, Mapping):
+                        raise PolicyError(
+                            f"scorer for {action!r} explained itself as "
+                            f"{type(breakdown).__name__}, expected a mapping"
+                        )
+                    factors[action] = {
+                        str(name): round(float(value), 6)
+                        for name, value in breakdown.items()
+                    }
+                    raw = sum(breakdown.values())
+                else:
+                    raw = scorer(values)
             except PolicyError:
                 raise
             except Exception as exc:  # noqa: BLE001 - re-typed for the caller
@@ -231,21 +355,22 @@ class WeightedPolicy(BasePolicy):
             if self.minimum_score is None or score >= self.minimum_score
         ]
 
-        rounded = {action: round(score, 6) for action, score in scores.items()}
+        explanation: Dict[str, Any] = {
+            "scores": {action: round(score, 6) for action, score in scores.items()}
+        }
+        if factors:
+            explanation["factors"] = factors
+
         if not eligible:
             if self.default_action is None:
                 raise PolicyError(
                     f"no action scored at or above minimum_score={self.minimum_score}; "
                     "configure default_action if that should be tolerated"
                 )
-            return self.decision(
-                self.default_action,
-                {"scores": rounded, "chosen_score": None, "reason": "below-minimum"},
-            )
+            explanation.update(chosen_score=None, reason="below-minimum")
+            return self.decision(self.default_action, explanation)
 
         # max() over the insertion-ordered list keeps the first of any tie.
         best_action, best_score = max(eligible, key=lambda item: item[1])
-        return self.decision(
-            best_action,
-            {"scores": rounded, "chosen_score": round(best_score, 6), "reason": "highest-score"},
-        )
+        explanation.update(chosen_score=round(best_score, 6), reason="highest-score")
+        return self.decision(best_action, explanation)

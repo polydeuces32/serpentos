@@ -171,6 +171,143 @@ class ComparisonOutcomeTest(unittest.TestCase):
         self.assertEqual(payload["metrics"]["cost"]["count"], 5)
 
 
+class ParityPolicy(BasePolicy):
+    """Retries on half the cases — which half depends on ``flip``."""
+
+    def __init__(self, name, flip):
+        super().__init__(name, "1.0")
+        self.flip = flip
+
+    def decide(self, context):
+        even = context["attempts"] % 2 == 0
+        return self.decision("retry" if even != self.flip else "fail")
+
+
+class DisagreementTest(unittest.TestCase):
+    def test_a_single_policy_has_nothing_to_disagree_with(self):
+        report = compare([ThresholdPolicy(2, "a")], CASES)
+        self.assertIsNone(report.disagreements)
+
+    def test_identical_policies_agree_on_everything(self):
+        report = compare([ThresholdPolicy(2, "a"), ThresholdPolicy(2, "b")], CASES)
+        summary = report.disagreements
+        self.assertEqual(summary.compared, 5)
+        self.assertEqual(summary.agreed, 5)
+        self.assertEqual(summary.disagreed, 0)
+        self.assertEqual(summary.agreement_rate, 1.0)
+        self.assertEqual(summary.examples, ())
+
+    def test_identical_distributions_can_still_disagree_on_every_case(self):
+        # The whole reason disagreement is reported separately: both policies
+        # retry on exactly half the cases, and never on the same one.
+        cases = [DecisionContext({"attempts": n}) for n in range(6)]
+        report = compare([ParityPolicy("a", False), ParityPolicy("b", True)], cases)
+        self.assertEqual(
+            report.for_policy("a").action_counts, report.for_policy("b").action_counts
+        )
+        summary = report.disagreements
+        self.assertEqual(summary.disagreed, 6)
+        self.assertEqual(summary.agreed, 0)
+        self.assertEqual(summary.agreement_rate, 0.0)
+
+    def test_partial_disagreement_is_counted_and_illustrated(self):
+        report = compare([ThresholdPolicy(2, "a"), ThresholdPolicy(4, "b")], CASES)
+        summary = report.disagreements
+        self.assertEqual(summary.compared, 5)
+        self.assertEqual(summary.agreed, 3)
+        self.assertEqual(summary.disagreed, 2)
+        self.assertEqual(
+            [example.case_index for example in summary.examples], [2, 3]
+        )
+        self.assertEqual(summary.examples[0].actions, {"a": "fail", "b": "retry"})
+
+    def test_pairs_are_reported_for_every_combination(self):
+        report = compare(
+            [ThresholdPolicy(2, "a"), ThresholdPolicy(4, "b"), ThresholdPolicy(2, "c")],
+            CASES,
+        )
+        pairs = {(pair.first, pair.second): pair for pair in report.disagreements.pairs}
+        self.assertEqual(set(pairs), {("a", "b"), ("a", "c"), ("b", "c")})
+        self.assertEqual(pairs[("a", "c")].disagreed, 0)
+        self.assertEqual(pairs[("a", "b")].disagreed, 2)
+        self.assertAlmostEqual(pairs[("a", "b")].rate, 0.4)
+
+    def test_a_case_a_policy_errored_on_is_not_a_disagreement(self):
+        report = compare([ThresholdPolicy(9, "a"), SometimesBrokenPolicy()], CASES)
+        summary = report.disagreements
+        # attempts == 2 blew up, so only four cases can be compared at all.
+        self.assertEqual(summary.compared, 4)
+        self.assertEqual(summary.agreed, 4)
+        self.assertEqual(summary.disagreed, 0)
+        self.assertEqual(summary.pairs[0].compared, 4)
+
+    def test_examples_are_capped_but_counts_are_not(self):
+        report = compare(
+            [ParityPolicy("a", False), ParityPolicy("b", True)],
+            CASES,
+            max_disagreement_samples=2,
+        )
+        self.assertEqual(report.disagreements.disagreed, 5)
+        self.assertEqual(len(report.disagreements.examples), 2)
+
+    def test_policies_sharing_a_name_are_distinguished_by_version(self):
+        first = ThresholdPolicy(2, "retry")
+        second = ThresholdPolicy(4, "retry")
+        second.version = "2.0"
+        report = compare([first, second], CASES)
+        self.assertEqual(
+            [item.label for item in report.reports], ["retry@1.0", "retry@2.0"]
+        )
+        self.assertEqual(
+            set(report.disagreements.examples[0].actions), {"retry@1.0", "retry@2.0"}
+        )
+        self.assertEqual(report.for_policy("retry@2.0").policy_version, "2.0")
+
+    def test_indistinguishable_policies_still_get_unique_labels(self):
+        report = compare([ThresholdPolicy(2, "same"), ThresholdPolicy(4, "same")], CASES)
+        labels = [item.label for item in report.reports]
+        self.assertEqual(len(set(labels)), 2)
+
+    def test_summary_serialises(self):
+        report = compare([ThresholdPolicy(2, "a"), ThresholdPolicy(4, "b")], CASES)
+        payload = report.to_dict()["disagreements"]
+        self.assertEqual(payload["disagreed"], 2)
+        self.assertEqual(payload["agreement_rate"], 0.6)
+        self.assertEqual(payload["pairs"][0]["first"], "a")
+        self.assertEqual(payload["examples"][0]["actions"], {"a": "fail", "b": "retry"})
+
+    def test_rejects_a_negative_example_cap(self):
+        with self.assertRaises(ConfigurationError):
+            compare([ThresholdPolicy(2, "a")], CASES, max_disagreement_samples=-1)
+
+
+class ComparisonScoreTest(unittest.TestCase):
+    def test_scores_are_aggregated_separately_from_metrics(self):
+        report = compare(
+            [ThresholdPolicy(2, "a")],
+            CASES,
+            outcome_fn=lambda context, decision: Outcome(
+                decision.action == "retry",
+                score=1.0 if decision.action == "retry" else -0.5,
+            ),
+        )
+        score = report.for_policy("a").outcomes.score
+        self.assertEqual(score.count, 5)
+        self.assertAlmostEqual(score.total, 0.5)
+        self.assertAlmostEqual(score.mean, 0.1)
+        self.assertEqual(score.minimum, -0.5)
+        self.assertEqual(score.maximum, 1.0)
+
+    def test_no_score_means_no_score_summary(self):
+        report = compare(
+            [ThresholdPolicy(2, "a")],
+            CASES,
+            outcome_fn=lambda context, decision: Outcome(True),
+        )
+        self.assertIsNone(report.for_policy("a").outcomes.score)
+        self.assertIsNone(report.to_dict()["policies"][0]["outcomes"]["score"])
+
+
 class ComparisonArgumentTest(unittest.TestCase):
     def test_needs_at_least_one_policy(self):
         with self.assertRaises(ConfigurationError):

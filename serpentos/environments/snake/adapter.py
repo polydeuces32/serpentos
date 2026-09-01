@@ -199,6 +199,8 @@ def outcome_from_episode(result: EpisodeResult) -> Outcome:
     """
     return Outcome(
         success=result.reason not in ("wall", "body"),
+        # Food eaten is the scalar this environment is actually judged on.
+        score=float(result.score),
         metrics={
             "score": float(result.score),
             "steps": float(result.steps),

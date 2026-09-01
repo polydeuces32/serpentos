@@ -177,7 +177,7 @@ class DecisionTest(unittest.TestCase):
 
 class OutcomeTest(unittest.TestCase):
     def test_metrics_are_coerced_to_float(self):
-        outcome = Outcome(True, {"latency_ms": 12})
+        outcome = Outcome(True, metrics={"latency_ms": 12})
         self.assertEqual(outcome.metrics["latency_ms"], 12.0)
         self.assertIsInstance(outcome.metrics["latency_ms"], float)
 
@@ -188,19 +188,48 @@ class OutcomeTest(unittest.TestCase):
     def test_metrics_must_be_numbers(self):
         for metrics in ({"a": "1"}, {"a": True}, {"a": None}):
             with self.assertRaises(ConfigurationError):
-                Outcome(True, metrics)
+                Outcome(True, metrics=metrics)
 
     def test_metrics_reject_non_finite(self):
         with self.assertRaises(ConfigurationError):
-            Outcome(True, {"a": float("inf")})
+            Outcome(True, metrics={"a": float("inf")})
 
     def test_roundtrip(self):
-        outcome = Outcome(False, {"cost": 1.5}, {"note": "timeout"}, "id-1")
+        outcome = Outcome(False, score=-1.0, metrics={"cost": 1.5},
+                          metadata={"note": "timeout"}, decision_id="id-1")
         self.assertEqual(Outcome.from_dict(outcome.to_dict()), outcome)
 
     def test_from_dict_requires_success(self):
         with self.assertRaises(ConfigurationError):
             Outcome.from_dict({"metrics": {}})
+
+    def test_score_is_optional(self):
+        outcome = Outcome(True)
+        self.assertIsNone(outcome.score)
+        self.assertIsNone(outcome.to_dict()["score"])
+
+    def test_score_is_coerced_to_float(self):
+        outcome = Outcome(True, score=3)
+        self.assertEqual(outcome.score, 3.0)
+        self.assertIsInstance(outcome.score, float)
+
+    def test_score_must_be_a_number(self):
+        for score in ("1.0", True, [1], {"a": 1}):
+            with self.assertRaises(ConfigurationError):
+                Outcome(True, score=score)
+
+    def test_score_rejects_non_finite(self):
+        for score in (float("inf"), float("nan")):
+            with self.assertRaises(ConfigurationError):
+                Outcome(True, score=score)
+
+    def test_a_negative_score_is_fine(self):
+        # Rewards can be punishments.
+        self.assertEqual(Outcome(False, score=-2.5).score, -2.5)
+
+    def test_score_survives_the_json_round_trip(self):
+        outcome = Outcome(True, score=0.25, metrics={"latency_ms": 12})
+        self.assertEqual(Outcome.from_dict(json.loads(json.dumps(outcome.to_dict()))), outcome)
 
 
 class CanonicalJsonTest(unittest.TestCase):

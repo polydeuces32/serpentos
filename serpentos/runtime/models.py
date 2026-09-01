@@ -294,18 +294,29 @@ class Decision:
 class Outcome:
     """What happened after the application executed a decision.
 
-    Deliberately thin. ``success`` means whatever the host application says it
-    means; the runtime never infers it and never ranks policies by it on your
-    behalf. ``metrics`` is a flat mapping of numbers — latency, cost, retries —
-    that :func:`~serpentos.runtime.comparison.compare` can aggregate when you
-    ask it to.
+    Three ways to say it, because one is never enough:
 
-    Outcomes are reported by the application, not produced by the runtime. In
-    Phase 1 nothing consumes them automatically; they exist so that comparison
-    can aggregate real results instead of guessing.
+    * ``success`` — did it work? Means whatever the host application says it
+      means. The runtime never infers it.
+    * ``score`` — an optional single number, for the cases where one genuinely
+      exists: a reward signal, a utility, a profit. Optional on purpose. A great
+      many real decisions have no honest scalar summary, and forcing one is how
+      you end up optimising the wrong thing.
+    * ``metrics`` — a flat mapping of named numbers: latency, cost, retries.
+      This is usually the truthful representation, and
+      :func:`~serpentos.runtime.comparison.compare` aggregates each one
+      separately rather than collapsing them.
+
+    Outcomes are reported by the application, not produced by the runtime.
+    Nothing consumes them automatically; they exist so comparison can aggregate
+    real results instead of guessing at them.
+
+    >>> Outcome(True, score=0.8, metrics={"latency_ms": 120})
+    Outcome(success=True, score=0.8, ...)
     """
 
     success: bool
+    score: Optional[float] = None
     metrics: Mapping[str, float] = field(default_factory=lambda: _EMPTY)
     metadata: Mapping[str, Any] = field(default_factory=lambda: _EMPTY)
     decision_id: Optional[str] = None
@@ -314,6 +325,14 @@ class Outcome:
         if not isinstance(self.success, bool):
             raise ConfigurationError(
                 f"success must be a bool, got {type(self.success).__name__}"
+            )
+        if self.score is not None:
+            if isinstance(self.score, bool) or not isinstance(self.score, (int, float)):
+                raise ConfigurationError(
+                    f"score must be a number or None, got {type(self.score).__name__}"
+                )
+            object.__setattr__(
+                self, "score", freeze_value(float(self.score), _path="score")
             )
         if not isinstance(self.metrics, Mapping):
             raise ConfigurationError(
@@ -337,6 +356,7 @@ class Outcome:
         """A mutable, JSON-ready copy."""
         return {
             "success": self.success,
+            "score": self.score,
             "metrics": dict(self.metrics),
             "metadata": thaw_value(self.metadata),
             "decision_id": self.decision_id,
@@ -357,6 +377,7 @@ class Outcome:
             raise ConfigurationError("outcome is missing 'success'")
         return cls(
             success=payload["success"],
+            score=payload.get("score"),
             metrics=_require_mapping(payload.get("metrics", {}), "outcome.metrics"),
             metadata=_require_mapping(payload.get("metadata", {}), "outcome.metadata"),
             decision_id=payload.get("decision_id"),
