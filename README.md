@@ -95,6 +95,26 @@ Full architecture, guarantees, security model and limitations: **[docs/DECISION_
 
 ---
 
+## Publishing to TestPyPI with GitHub Actions Trusted Publishing
+
+SerpentOS is configured for TestPyPI OIDC Trusted Publishing via a dedicated GitHub Actions workflow.
+
+TestPyPI Trusted Publisher values to enter:
+- Owner: `polydeuces32`
+- Repository: `serpentos`
+- Workflow filename: `release.yml`
+- Environment: `testpypi`
+
+The workflow lives at:
+- `.github/workflows/release.yml`
+
+It uses GitHub Actions OIDC (`id-token: write`) and publishes only to:
+- `https://test.pypi.org/legacy/`
+
+No long-lived API token is required for this path.
+
+---
+
 ## Features
 
 - **Policy runtime** — context → policy → decision → outcome, with validation, audit, replay, and comparison that reports where policies disagree
