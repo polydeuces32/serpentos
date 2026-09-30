@@ -44,3 +44,56 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist
+
+  verify-testpypi:
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install SerpentOS from TestPyPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            if python -m pip install               --index-url https://test.pypi.org/simple/               --no-deps               "serpentos==2.0.0"; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "SerpentOS 2.0.0 was not installable from TestPyPI after 6 attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+      - name: Smoke-test installed package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from serpentos import ActionValidator, DecisionContext, DecisionEngine
+          from serpentos.policies import Rule, RulePolicy, when
+
+          policy = RulePolicy(
+              name="release-smoke",
+              version="1.0",
+              rules=[
+                  Rule("fail", when("attempts", "ge", 3), name="give-up"),
+                  Rule("retry", when("status_code", "in", [503, 504]), name="retry-5xx"),
+              ],
+              default_action="fail",
+          )
+          engine = DecisionEngine(
+              policy=policy,
+              validator=ActionValidator(allowed_actions={"retry", "fail"}),
+          )
+          decision = engine.decide(
+              DecisionContext(values={"attempts": 2, "status_code": 503})
+          )
+          assert decision.action == "retry", decision
+          print("SerpentOS runtime smoke test: PASS")
+          PY
+          serpentos help
+          python -m serpentos help
