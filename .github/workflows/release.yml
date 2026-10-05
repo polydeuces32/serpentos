@@ -54,16 +54,58 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-artifacts
+          path: dist
+      - name: Resolve published version
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERPENTOS_VERSION="$(python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = list(Path("dist").glob("serpentos-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one serpentos wheel, found {len(wheels)}")
+
+          with ZipFile(wheels[0]) as archive:
+              metadata_files = [
+                  name for name in archive.namelist()
+                  if name.endswith(".dist-info/METADATA")
+              ]
+              if len(metadata_files) != 1:
+                  raise SystemExit(
+                      f"expected exactly one METADATA file, found {len(metadata_files)}"
+                  )
+              metadata = archive.read(metadata_files[0]).decode("utf-8")
+
+          for line in metadata.splitlines():
+              if line.startswith("Version: "):
+                  print(line.removeprefix("Version: "))
+                  break
+          else:
+              raise SystemExit("package version missing from wheel metadata")
+          PY
+          )"
+          test -n "$SERPENTOS_VERSION"
+          echo "SERPENTOS_VERSION=$SERPENTOS_VERSION" >> "$GITHUB_ENV"
+          echo "Will verify serpentos==$SERPENTOS_VERSION from TestPyPI"
       - name: Install SerpentOS from TestPyPI
         shell: bash
         run: |
           set -euo pipefail
           for attempt in 1 2 3 4 5 6; do
-            if python -m pip install               --index-url https://test.pypi.org/simple/               --no-deps               "serpentos==2.0.0"; then
+            if python -m pip install \
+              --index-url https://test.pypi.org/simple/ \
+              --no-deps \
+              "serpentos==$SERPENTOS_VERSION"; then
               exit 0
             fi
             if [ "$attempt" -eq 6 ]; then
-              echo "SerpentOS 2.0.0 was not installable from TestPyPI after 6 attempts" >&2
+              echo "SerpentOS $SERPENTOS_VERSION was not installable from TestPyPI after 6 attempts" >&2
               exit 1
             fi
             sleep 10
