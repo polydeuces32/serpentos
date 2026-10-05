@@ -1,5 +1,9 @@
 # SerpentOS
 
+Engineering documentation: [documentation map](docs/README.md),
+[project intent](INTENT.md), [architecture](ARCHITECTURE.md),
+[verified status](STATUS.md), and [coding-agent instructions](AGENTS.md).
+
 **A policy runtime you can embed in a Python project, and a terminal snake game that demonstrates it.**
 
 Two things live in this repository, and it is worth knowing which one you came for.

@@ -1,6 +1,11 @@
 # Contributing to SerpentOS
 
-Thanks for taking a look. This project has no dependencies and no build step, so getting set up should take under a minute.
+The runtime and learning core use the Python standard library. Source tests need
+no installation; building distribution artifacts uses development tooling, and the
+Windows terminal UI has the declared `windows-curses` dependency.
+
+See the [documentation map](docs/README.md) and
+[definition of done](DEFINITION_OF_DONE.md) for change-specific verification.
 
 ```bash
 git clone https://github.com/polydeuces32/serpentos.git

@@ -1,5 +1,9 @@
 # Running SerpentOS as a self-running agent
 
+This is the training bot operations guide. Coding-agent instructions are in
+the repository root [AGENTS.md](../AGENTS.md); see the [documentation map](README.md)
+for purpose, architecture, contracts, and verified status.
+
 The learning core imports nothing platform-specific, so the agent runs anywhere Python does — no terminal, no keyboard, no display. This document covers operating it as a long-lived process.
 
 ```bash
