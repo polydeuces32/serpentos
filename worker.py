@@ -7,17 +7,26 @@ from urllib.parse import urlsplit
 from workers import Response, WorkerEntrypoint
 
 from deployments.cloudflare.api import handle_decision, health_payload
+from deployments.cloudflare.site import API_HOSTS, PUBLIC_HOSTS, landing_page
 
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        path = urlsplit(str(request.url)).path
+        parsed = urlsplit(str(request.url))
+        host = (parsed.hostname or "").lower()
+        path = parsed.path
         method = str(request.method).upper()
 
-        if method == "GET" and path == "/health":
+        if method == "GET" and path == "/" and host in PUBLIC_HOSTS:
+            return Response(
+                landing_page(),
+                headers={"content-type": "text/html; charset=utf-8"},
+            )
+
+        if method == "GET" and path == "/health" and host in API_HOSTS | PUBLIC_HOSTS:
             return Response.json(health_payload())
 
-        if method == "POST" and path == "/v1/decide":
+        if method == "POST" and path == "/v1/decide" and host in API_HOSTS | PUBLIC_HOSTS:
             try:
                 payload = await request.json()
             except Exception:
